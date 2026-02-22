@@ -724,7 +724,7 @@ describe("configureWorkItemTools", () => {
         ok: true,
         text: () => Promise.resolve(JSON.stringify(_mockWorkItemComment)),
       });
-      global.fetch = mockFetch;
+      globalThis.fetch = mockFetch;
 
       const params = {
         comment: "hello world!",
@@ -764,7 +764,7 @@ describe("configureWorkItemTools", () => {
         ok: true,
         text: () => Promise.resolve(JSON.stringify(_mockWorkItemComment)),
       });
-      global.fetch = mockFetch;
+      globalThis.fetch = mockFetch;
 
       const params = {
         comment: "hello world!",
@@ -805,7 +805,7 @@ describe("configureWorkItemTools", () => {
         ok: false,
         statusText: "Not Found",
       });
-      global.fetch = mockFetch;
+      globalThis.fetch = mockFetch;
 
       const params = {
         comment: "hello world!",
@@ -1467,7 +1467,7 @@ describe("configureWorkItemTools", () => {
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
       // Mock fetch for successful response
-      global.fetch = jest.fn().mockResolvedValue({
+      globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue({ success: true }),
       });
@@ -1533,7 +1533,7 @@ describe("configureWorkItemTools", () => {
       mockConnection.serverUrl = "https://dev.azure.com/contoso";
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
-      global.fetch = jest.fn().mockResolvedValue({
+      globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue([{ id: 1, success: true }]),
       });
@@ -1598,7 +1598,7 @@ describe("configureWorkItemTools", () => {
       mockConnection.serverUrl = "https://dev.azure.com/contoso";
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
-      global.fetch = jest.fn().mockResolvedValue({
+      globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue([{ id: 1, success: true }]),
       });
@@ -1668,7 +1668,7 @@ describe("configureWorkItemTools", () => {
       mockConnection.serverUrl = "https://dev.azure.com/contoso";
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
-      global.fetch = jest.fn().mockResolvedValue({
+      globalThis.fetch = jest.fn().mockResolvedValue({
         ok: false,
         statusText: "Bad Request",
       });
@@ -1702,7 +1702,7 @@ describe("configureWorkItemTools", () => {
       mockConnection.serverUrl = "https://dev.azure.com/contoso";
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
-      global.fetch = jest.fn().mockResolvedValue({
+      globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue([{ id: 1, success: true }]),
       });
@@ -1745,7 +1745,7 @@ describe("configureWorkItemTools", () => {
       mockConnection.serverUrl = "https://dev.azure.com/contoso";
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
-      global.fetch = jest.fn().mockResolvedValue({
+      globalThis.fetch = jest.fn().mockResolvedValue({
         ok: false,
         statusText: "Unauthorized",
       });
@@ -2288,7 +2288,7 @@ describe("configureWorkItemTools", () => {
       mockConnection.serverUrl = "https://dev.azure.com/contoso";
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
-      global.fetch = jest.fn().mockResolvedValue({
+      globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue([{ id: 1, success: true }]),
       });
@@ -2329,7 +2329,7 @@ describe("configureWorkItemTools", () => {
         ok: true,
         json: () => Promise.resolve({ responses: [{ body: { id: 123 } }] }),
       });
-      global.fetch = mockFetch;
+      globalThis.fetch = mockFetch;
 
       const params = {
         parentId: 1,
@@ -2375,7 +2375,7 @@ describe("configureWorkItemTools", () => {
         ok: true,
         json: () => Promise.resolve({ responses: [{ body: { id: 123 } }] }),
       });
-      global.fetch = mockFetch;
+      globalThis.fetch = mockFetch;
 
       const params = {
         parentId: 1,
@@ -2453,7 +2453,7 @@ describe("configureWorkItemTools", () => {
         ok: true,
         json: () => Promise.resolve({ responses: [{ body: { id: 123 } }] }),
       });
-      global.fetch = mockFetch;
+      globalThis.fetch = mockFetch;
 
       const params = {
         parentId: 1,
@@ -2501,7 +2501,7 @@ describe("configureWorkItemTools", () => {
         ok: false,
         statusText: "Internal Server Error",
       });
-      global.fetch = mockFetch;
+      globalThis.fetch = mockFetch;
 
       const params = {
         parentId: 1,

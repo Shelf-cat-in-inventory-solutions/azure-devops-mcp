@@ -4,6 +4,7 @@
 import { describe, expect, it } from "@jest/globals";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebApi } from "azure-devops-node-api";
+import { setImmediate } from "node:timers";
 import { configureWikiTools } from "../../../src/tools/wiki";
 
 type TokenProviderMock = () => Promise<string>;
@@ -343,7 +344,7 @@ describe("configureWikiTools", () => {
 
     beforeEach(() => {
       mockFetch = jest.fn();
-      global.fetch = mockFetch;
+      globalThis.fetch = mockFetch;
       (tokenProvider as jest.Mock).mockResolvedValue("test-token");
     });
 
@@ -362,7 +363,7 @@ describe("configureWikiTools", () => {
 
       mockFetch.mockResolvedValue({
         ok: true,
-        json: async () => mockPageData,
+        json: () => mockPageData,
       });
 
       const params = {
@@ -396,7 +397,7 @@ describe("configureWikiTools", () => {
 
       mockFetch.mockResolvedValue({
         ok: true,
-        json: async () => mockPageData,
+        json: () => mockPageData,
       });
 
       const params = {
@@ -419,7 +420,7 @@ describe("configureWikiTools", () => {
 
       mockFetch.mockResolvedValue({
         ok: true,
-        json: async () => ({ id: 789 }),
+        json: () => ({ id: 789 }),
       });
 
       const params = {
@@ -444,7 +445,7 @@ describe("configureWikiTools", () => {
       mockFetch.mockResolvedValue({
         ok: false,
         status: 404,
-        text: async () => "Page not found",
+        text: () => "Page not found",
       });
 
       const params = {
@@ -653,7 +654,7 @@ describe("configureWikiTools", () => {
 
       // Mock fetch for REST page by id returning content
       const mockFetch = jest.fn();
-      global.fetch = mockFetch as typeof fetch;
+      globalThis.fetch = mockFetch as typeof fetch;
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: jest.fn().mockResolvedValue({ content: "# Page Title\nBody" }),
@@ -676,7 +677,7 @@ describe("configureWikiTools", () => {
       (tokenProvider as jest.Mock).mockResolvedValueOnce("abc");
 
       const mockFetch = jest.fn();
-      global.fetch = mockFetch as typeof fetch;
+      globalThis.fetch = mockFetch as typeof fetch;
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: jest.fn().mockResolvedValue({ path: "/Some/Page" }),
@@ -751,7 +752,7 @@ describe("configureWikiTools", () => {
       (tokenProvider as jest.Mock).mockResolvedValueOnce({ token: "abc", expiresOnTimestamp: Date.now() + 10000 });
 
       const mockFetch = jest.fn();
-      global.fetch = mockFetch as unknown as typeof fetch;
+      globalThis.fetch = mockFetch as unknown as typeof fetch;
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 404,
@@ -832,7 +833,7 @@ describe("configureWikiTools", () => {
       (tokenProvider as jest.Mock).mockResolvedValueOnce({ token: "abc", expiresOnTimestamp: Date.now() + 10000 });
 
       const mockFetch = jest.fn();
-      global.fetch = mockFetch as unknown as typeof fetch;
+      globalThis.fetch = mockFetch as unknown as typeof fetch;
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 404,
@@ -854,7 +855,7 @@ describe("configureWikiTools", () => {
     beforeEach(() => {
       // Mock fetch for REST API calls
       mockFetch = jest.fn();
-      global.fetch = mockFetch;
+      globalThis.fetch = mockFetch;
 
       tokenProvider = jest.fn().mockResolvedValue("test-token");
 
