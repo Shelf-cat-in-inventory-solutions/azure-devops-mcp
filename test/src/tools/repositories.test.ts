@@ -81,7 +81,7 @@ describe("repos tools", () => {
 
     mockGetCurrentUserDetails.mockResolvedValue({
       authenticatedUser: { id: "user123", uniqueName: "testuser@example.com", displayName: "Test User" },
-    } as any);
+    } as unknown);
   });
 
   describe("repo_update_pull_request", () => {
@@ -3525,7 +3525,7 @@ describe("repos tools", () => {
           },
         },
       };
-      const mockLabels: any[] = [];
+      const mockLabels: unknown[] = [];
 
       mockGitApi.getPullRequest.mockResolvedValue(mockPR);
       mockGitApi.getPullRequestLabels.mockResolvedValue(mockLabels);
@@ -4259,7 +4259,7 @@ describe("repos tools", () => {
       expect(parsedResult.comments).toHaveLength(2);
       expect(parsedResult.comments[0].id).toBe(1);
       expect(parsedResult.comments[1].id).toBe(3);
-      expect(parsedResult.comments.find((c: any) => c.id === 2)).toBeUndefined();
+      expect(parsedResult.comments.find((c: { id: number }) => c.id === 2)).toBeUndefined();
     });
   });
 
