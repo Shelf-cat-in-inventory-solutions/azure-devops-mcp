@@ -1,0 +1,7 @@
+
+Lovable UI (React)
+   → POST /upload  (image)
+   → Python API (FastAPI)
+   → YOLO pipeline (pipeline.py)
+   → Rust aggregator (counts + hidden inventory)
+   → Response back to UI (SKU, facings, count, confidence)
