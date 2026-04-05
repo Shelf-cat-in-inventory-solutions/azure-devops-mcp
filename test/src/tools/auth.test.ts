@@ -25,7 +25,7 @@ describe("auth functions", () => {
     connectionProvider = jest.fn().mockResolvedValue(mockConnection);
 
     // Mock fetch globally for these tests
-    global.fetch = jest.fn();
+    globalThis.fetch = jest.fn();
   });
 
   afterEach(() => {
@@ -46,14 +46,14 @@ describe("auth functions", () => {
         },
       };
 
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue(mockUserData),
       });
 
       const result = await getCurrentUserDetails(tokenProvider, connectionProvider, userAgentProvider);
 
-      expect(global.fetch).toHaveBeenCalledWith("https://dev.azure.com/test-org/_apis/connectionData", {
+      expect(globalThis.fetch).toHaveBeenCalledWith("https://dev.azure.com/test-org/_apis/connectionData", {
         method: "GET",
         headers: {
           "Authorization": "Bearer fake-token",
@@ -69,7 +69,7 @@ describe("auth functions", () => {
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
       const errorData = { message: "Unauthorized" };
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: false,
         status: 401,
         json: jest.fn().mockResolvedValue(errorData),
@@ -81,7 +81,7 @@ describe("auth functions", () => {
     it("should handle network errors correctly", async () => {
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
-      (global.fetch as jest.Mock).mockRejectedValue(new Error("Network error"));
+      (globalThis.fetch as jest.Mock).mockRejectedValue(new Error("Network error"));
 
       await expect(getCurrentUserDetails(tokenProvider, connectionProvider, userAgentProvider)).rejects.toThrow("Network error");
     });
@@ -108,14 +108,14 @@ describe("auth functions", () => {
         ],
       };
 
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue(mockIdentities),
       });
 
       const result = await searchIdentities("john.doe@example.com", tokenProvider, connectionProvider, userAgentProvider);
 
-      expect(global.fetch).toHaveBeenCalledWith("https://vssps.dev.azure.com/test-org/_apis/identities?api-version=7.2-preview.1&searchFilter=General&filterValue=john.doe%40example.com", {
+      expect(globalThis.fetch).toHaveBeenCalledWith("https://vssps.dev.azure.com/test-org/_apis/identities?api-version=7.2-preview.1&searchFilter=General&filterValue=john.doe%40example.com", {
         headers: {
           "Authorization": "Bearer fake-token",
           "Content-Type": "application/json",
@@ -130,7 +130,7 @@ describe("auth functions", () => {
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
       // Mock failed HTTP response
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: false,
         status: 404,
         text: jest.fn().mockResolvedValue("Not Found"),
@@ -142,7 +142,7 @@ describe("auth functions", () => {
     it("should handle network errors correctly", async () => {
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
-      (global.fetch as jest.Mock).mockRejectedValue(new Error("Network timeout"));
+      (globalThis.fetch as jest.Mock).mockRejectedValue(new Error("Network timeout"));
 
       await expect(searchIdentities("test@example.com", tokenProvider, connectionProvider, userAgentProvider)).rejects.toThrow("Network timeout");
     });
@@ -150,14 +150,14 @@ describe("auth functions", () => {
     it("should properly encode search filter in URL", async () => {
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue({ value: [] }),
       });
 
       await searchIdentities("user with spaces@example.com", tokenProvider, connectionProvider, userAgentProvider);
 
-      expect(global.fetch).toHaveBeenCalledWith(
+      expect(globalThis.fetch).toHaveBeenCalledWith(
         "https://vssps.dev.azure.com/test-org/_apis/identities?api-version=7.2-preview.1&searchFilter=General&filterValue=user+with+spaces%40example.com",
         expect.any(Object)
       );
@@ -180,14 +180,14 @@ describe("auth functions", () => {
         ],
       };
 
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue(mockIdentities),
       });
 
       const result = await getUserIdFromEmail("john.doe@example.com", tokenProvider, connectionProvider, userAgentProvider);
 
-      expect(global.fetch).toHaveBeenCalledWith("https://vssps.dev.azure.com/test-org/_apis/identities?api-version=7.2-preview.1&searchFilter=General&filterValue=john.doe%40example.com", {
+      expect(globalThis.fetch).toHaveBeenCalledWith("https://vssps.dev.azure.com/test-org/_apis/identities?api-version=7.2-preview.1&searchFilter=General&filterValue=john.doe%40example.com", {
         headers: {
           "Authorization": "Bearer fake-token",
           "Content-Type": "application/json",
@@ -216,7 +216,7 @@ describe("auth functions", () => {
         ],
       };
 
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue(mockIdentities),
       });
@@ -230,7 +230,7 @@ describe("auth functions", () => {
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
       // Mock empty response
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue({ value: [] }),
       });
@@ -242,7 +242,7 @@ describe("auth functions", () => {
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
       // Mock null response
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue(null),
       });
@@ -264,7 +264,7 @@ describe("auth functions", () => {
         ],
       };
 
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue(mockIdentities),
       });
@@ -278,7 +278,7 @@ describe("auth functions", () => {
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
       // Mock failed HTTP response
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: false,
         status: 403,
         text: jest.fn().mockResolvedValue("Forbidden"),
@@ -290,7 +290,7 @@ describe("auth functions", () => {
     it("should handle network errors correctly", async () => {
       (tokenProvider as jest.Mock).mockResolvedValue("fake-token");
 
-      (global.fetch as jest.Mock).mockRejectedValue(new Error("Connection refused"));
+      (globalThis.fetch as jest.Mock).mockRejectedValue(new Error("Connection refused"));
 
       await expect(getUserIdFromEmail("test@example.com", tokenProvider, connectionProvider, userAgentProvider)).rejects.toThrow("Connection refused");
     });
@@ -308,14 +308,14 @@ describe("auth functions", () => {
         ],
       };
 
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue(mockIdentities),
       });
 
       const result = await getUserIdFromEmail("john.doe", tokenProvider, connectionProvider, userAgentProvider);
 
-      expect(global.fetch).toHaveBeenCalledWith("https://vssps.dev.azure.com/test-org/_apis/identities?api-version=7.2-preview.1&searchFilter=General&filterValue=john.doe", expect.any(Object));
+      expect(globalThis.fetch).toHaveBeenCalledWith("https://vssps.dev.azure.com/test-org/_apis/identities?api-version=7.2-preview.1&searchFilter=General&filterValue=john.doe", expect.any(Object));
 
       expect(result).toBe("user1-id");
     });
