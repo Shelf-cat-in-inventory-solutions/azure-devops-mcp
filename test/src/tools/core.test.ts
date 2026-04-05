@@ -421,7 +421,7 @@ describe("configureCoreTools", () => {
   describe("get_identity_ids tool", () => {
     beforeEach(() => {
       // Mock fetch globally for these tests
-      global.fetch = jest.fn();
+      globalThis.fetch = jest.fn();
     });
 
     afterEach(() => {
@@ -461,7 +461,7 @@ describe("configureCoreTools", () => {
         ],
       };
 
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue(mockIdentities),
       });
@@ -469,7 +469,7 @@ describe("configureCoreTools", () => {
       const params = { searchFilter: "john.doe@example.com" };
       const result = await handler(params);
 
-      expect(global.fetch).toHaveBeenCalledWith("https://vssps.dev.azure.com/test-org/_apis/identities?api-version=7.2-preview.1&searchFilter=General&filterValue=john.doe%40example.com", {
+      expect(globalThis.fetch).toHaveBeenCalledWith("https://vssps.dev.azure.com/test-org/_apis/identities?api-version=7.2-preview.1&searchFilter=General&filterValue=john.doe%40example.com", {
         headers: {
           "Authorization": "Bearer fake-token",
           "Content-Type": "application/json",
@@ -509,7 +509,7 @@ describe("configureCoreTools", () => {
       (connectionProvider as jest.Mock).mockResolvedValue(mockConnectionWithUrl);
 
       // Mock failed HTTP response
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: false,
         status: 404,
         text: jest.fn().mockResolvedValue("Not Found"),
@@ -537,7 +537,7 @@ describe("configureCoreTools", () => {
       (connectionProvider as jest.Mock).mockResolvedValue(mockConnectionWithUrl);
 
       // Mock empty response
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue({ value: [] }),
       });
@@ -564,7 +564,7 @@ describe("configureCoreTools", () => {
       (connectionProvider as jest.Mock).mockResolvedValue(mockConnectionWithUrl);
 
       // Mock null response
-      (global.fetch as jest.Mock).mockResolvedValue({
+      (globalThis.fetch as jest.Mock).mockResolvedValue({
         ok: true,
         json: jest.fn().mockResolvedValue(null),
       });
@@ -591,7 +591,7 @@ describe("configureCoreTools", () => {
       (connectionProvider as jest.Mock).mockResolvedValue(mockConnectionWithUrl);
 
       // Mock network error
-      (global.fetch as jest.Mock).mockRejectedValue(new Error("Network error"));
+      (globalThis.fetch as jest.Mock).mockRejectedValue(new Error("Network error"));
 
       const params = { searchFilter: "test@example.com" };
       const result = await handler(params);
@@ -615,7 +615,7 @@ describe("configureCoreTools", () => {
       (connectionProvider as jest.Mock).mockResolvedValue(mockConnectionWithUrl);
 
       // Mock unknown error type (not an Error instance)
-      (global.fetch as jest.Mock).mockRejectedValue("string error");
+      (globalThis.fetch as jest.Mock).mockRejectedValue("string error");
 
       const params = { searchFilter: "test@example.com" };
       const result = await handler(params);
