@@ -10,6 +10,7 @@ import { StageUpdateType } from "azure-devops-node-api/interfaces/BuildInterface
 import { ConfigurationType, RepositoryType } from "azure-devops-node-api/interfaces/PipelinesInterfaces.js";
 import { mkdirSync, createWriteStream } from "fs";
 import { join, resolve } from "path";
+import { Buffer } from "node:buffer";
 
 const PIPELINE_TOOLS = {
   pipelines_get_builds: "pipelines_get_builds",
@@ -124,6 +125,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       const pipelinesApi = await connection.getPipelinesApi();
 
       const repositoryTypeEnumValue = safeEnumConvert(RepositoryType, repositoryType);
+      // deno-lint-ignore no-explicit-any
       const repositoryPayload: any = {
         type: repositoryType,
       };
@@ -142,6 +144,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
 
       const yamlConfigurationType = getEnumKeys(ConfigurationType).find((k) => ConfigurationType[k as keyof typeof ConfigurationType] === ConfigurationType.Yaml);
 
+      // deno-lint-ignore no-explicit-any
       const createPipelineParams: any = {
         name: name,
         folder: folder || "\\",

@@ -25,7 +25,7 @@ describe("getOrgTenant", () => {
 
   beforeEach(() => {
     mockFetch = jest.fn() as FetchMock;
-    global.fetch = mockFetch;
+    globalThis.fetch = mockFetch;
 
     mockReadFile = jest.spyOn(fs, "readFile");
     mockWriteFile = jest.spyOn(fs, "writeFile");
