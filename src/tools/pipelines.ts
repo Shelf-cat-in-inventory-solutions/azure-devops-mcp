@@ -9,7 +9,8 @@ import { z } from "zod";
 import { StageUpdateType } from "azure-devops-node-api/interfaces/BuildInterfaces.js";
 import { ConfigurationType, RepositoryType } from "azure-devops-node-api/interfaces/PipelinesInterfaces.js";
 import { mkdirSync, createWriteStream } from "fs";
-import { join, resolve } from "path";
+import { createExternalContentResponse } from "../shared/content-safety.js";
+import { join, posix, resolve, win32 } from "path";
 
 const PIPELINE_TOOLS = {
   pipelines_get_builds: "pipelines_get_builds",
@@ -45,7 +46,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       top: z.number().optional().describe("Maximum number of build definitions to return"),
       continuationToken: z.string().optional().describe("Token for continuing paged results"),
       minMetricsTime: z.coerce.date().optional().describe("Minimum metrics time to filter build definitions"),
-      definitionIds: z.array(z.number()).optional().describe("Array of build definition IDs to filter"),
+      definitionIds: z.array(z.coerce.number().min(1)).optional().describe("Array of build definition IDs to filter"),
       builtAfter: z.coerce.date().optional().describe("Return definitions that have builds after this date"),
       notBuiltAfter: z.coerce.date().optional().describe("Return definitions that do not have builds after this date"),
       includeAllProperties: z.boolean().optional().describe("Whether to include all properties in the results"),
@@ -165,7 +166,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     "Retrieves a list of revisions for a specific build definition.",
     {
       project: z.string().describe("Project ID or name to get the build definition revisions for"),
-      definitionId: z.number().describe("ID of the build definition to get revisions for"),
+      definitionId: z.coerce.number().min(1).describe("ID of the build definition to get revisions for"),
     },
     async ({ project, definitionId }) => {
       const connection = await connectionProvider();
@@ -183,8 +184,8 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     "Retrieves a list of builds for a given project.",
     {
       project: z.string().describe("Project ID or name to get builds for"),
-      definitions: z.array(z.number()).optional().describe("Array of build definition IDs to filter builds"),
-      queues: z.array(z.number()).optional().describe("Array of queue IDs to filter builds"),
+      definitions: z.array(z.coerce.number().min(1)).optional().describe("Array of build definition IDs to filter builds"),
+      queues: z.array(z.coerce.number().min(1)).optional().describe("Array of queue IDs to filter builds"),
       buildNumber: z.string().optional().describe("Build number to filter builds"),
       minTime: z.coerce.date().optional().describe("Minimum finish time to filter builds"),
       maxTime: z.coerce.date().optional().describe("Maximum finish time to filter builds"),
@@ -204,7 +205,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
         .optional()
         .describe("Order in which builds are returned"),
       branchName: z.string().optional().describe("Branch name to filter builds"),
-      buildIds: z.array(z.number()).optional().describe("Array of build IDs to retrieve"),
+      buildIds: z.array(z.coerce.number().min(1)).optional().describe("Array of build IDs to retrieve"),
       repositoryId: z.string().optional().describe("Repository ID to filter builds"),
       repositoryType: z.enum(["TfsGit", "GitHub", "BitbucketCloud"]).optional().describe("Type of repository to filter builds"),
     },
@@ -268,7 +269,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     "Retrieves the logs for a specific build.",
     {
       project: z.string().describe("Project ID or name to get the build log for"),
-      buildId: z.number().describe("ID of the build to get the log for"),
+      buildId: z.coerce.number().min(1).describe("ID of the build to get the log for"),
     },
     async ({ project, buildId }) => {
       const connection = await connectionProvider();
@@ -286,19 +287,17 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     "Get a specific build log by log ID.",
     {
       project: z.string().describe("Project ID or name to get the build log for"),
-      buildId: z.number().describe("ID of the build to get the log for"),
-      logId: z.number().describe("ID of the log to retrieve"),
-      startLine: z.number().optional().describe("Starting line number for the log content, defaults to 0"),
-      endLine: z.number().optional().describe("Ending line number for the log content, defaults to the end of the log"),
+      buildId: z.coerce.number().min(1).describe("ID of the build to get the log for"),
+      logId: z.coerce.number().min(1).describe("ID of the log to retrieve"),
+      startLine: z.coerce.number().optional().describe("Starting line number for the log content, defaults to 0"),
+      endLine: z.coerce.number().optional().describe("Ending line number for the log content, defaults to the end of the log"),
     },
     async ({ project, buildId, logId, startLine, endLine }) => {
       const connection = await connectionProvider();
       const buildApi = await connection.getBuildApi();
       const logLines = await buildApi.getBuildLogLines(project, buildId, logId, startLine, endLine);
 
-      return {
-        content: [{ type: "text", text: JSON.stringify(logLines, null, 2) }],
-      };
+      return createExternalContentResponse(logLines, "build log");
     }
   );
 
@@ -307,7 +306,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     "Get the changes associated with a specific build.",
     {
       project: z.string().describe("Project ID or name to get the build changes for"),
-      buildId: z.number().describe("ID of the build to get changes for"),
+      buildId: z.coerce.number().min(1).describe("ID of the build to get changes for"),
       continuationToken: z.string().optional().describe("Continuation token for pagination"),
       top: z.number().default(100).describe("Number of changes to retrieve, defaults to 100"),
       includeSourceChange: z.boolean().optional().describe("Whether to include source changes in the results, defaults to false"),
@@ -328,8 +327,8 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     "Gets a run for a particular pipeline.",
     {
       project: z.string().describe("Project ID or name to run the build in"),
-      pipelineId: z.number().describe("ID of the pipeline to run"),
-      runId: z.number().describe("ID of the run to get"),
+      pipelineId: z.coerce.number().min(1).describe("ID of the pipeline to run"),
+      runId: z.coerce.number().min(1).describe("ID of the run to get"),
     },
     async ({ project, pipelineId, runId }) => {
       const connection = await connectionProvider();
@@ -347,7 +346,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     "Gets top 10000 runs for a particular pipeline.",
     {
       project: z.string().describe("Project ID or name to run the build in"),
-      pipelineId: z.number().describe("ID of the pipeline to run"),
+      pipelineId: z.coerce.number().min(1).describe("ID of the pipeline to run"),
     },
     async ({ project, pipelineId }) => {
       const connection = await connectionProvider();
@@ -388,7 +387,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     pipelines: z.record(
       z.string().describe("Name of the pipeline resource."),
       z.object({
-        runId: z.number().describe("Id of the source pipeline run that triggered or is referenced by this pipeline run."),
+        runId: z.coerce.number().min(1).optional().describe("Id of the source pipeline run that triggered or is referenced by this pipeline run."),
         version: z.string().optional().describe("Version of the source pipeline run."),
       })
     ),
@@ -410,8 +409,8 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     "Starts a new run of a pipeline.",
     {
       project: z.string().describe("Project ID or name to run the build in"),
-      pipelineId: z.number().describe("ID of the pipeline to run"),
-      pipelineVersion: z.number().optional().describe("Version of the pipeline to run. If not provided, the latest version will be used."),
+      pipelineId: z.coerce.number().min(1).describe("ID of the pipeline to run"),
+      pipelineVersion: z.coerce.number().min(1).optional().describe("Version of the pipeline to run. If not provided, the latest version will be used."),
       previewRun: z.boolean().optional().describe("If true, returns the final YAML document after parsing templates without creating a new run."),
       resources: resourcesSchema.optional().describe("A dictionary of resources to pass to the pipeline."),
       stagesToSkip: z.array(z.string()).optional().describe("A list of stages to skip."),
@@ -440,6 +439,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
       const pipelineRun = await pipelinesApi.runPipeline(runRequest, project, pipelineId, pipelineVersion);
       const queuedBuild = { id: pipelineRun.id };
       const buildId = queuedBuild.id;
+
       if (buildId === undefined) {
         throw new Error("Failed to get build ID from pipeline run");
       }
@@ -455,7 +455,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     "Fetches the status of a specific build.",
     {
       project: z.string().describe("Project ID or name to get the build status for"),
-      buildId: z.number().describe("ID of the build to get the status for"),
+      buildId: z.coerce.number().min(1).describe("ID of the build to get the status for"),
     },
     async ({ project, buildId }) => {
       const connection = await connectionProvider();
@@ -473,7 +473,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     "Updates the stage of a specific build.",
     {
       project: z.string().describe("Project ID or name to update the build stage for"),
-      buildId: z.number().describe("ID of the build to update"),
+      buildId: z.coerce.number().min(1).describe("ID of the build to update"),
       stageName: z.string().describe("Name of the stage to update"),
       status: z.enum(getEnumKeys(StageUpdateType) as [string, ...string[]]).describe("New status for the stage"),
       forceRetryAllJobs: z.boolean().default(false).describe("Whether to force retry all jobs in the stage."),
@@ -481,7 +481,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     async ({ project, buildId, stageName, status, forceRetryAllJobs }) => {
       const connection = await connectionProvider();
       const orgUrl = connection.serverUrl;
-      const endpoint = `${orgUrl}/${project}/_apis/build/builds/${buildId}/stages/${stageName}?api-version=${apiVersion}`;
+      const endpoint = `${orgUrl}/${encodeURIComponent(project)}/_apis/build/builds/${buildId}/stages/${encodeURIComponent(stageName)}?api-version=${apiVersion}`;
       const token = await tokenProvider();
 
       const body = {
@@ -517,7 +517,7 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     "Lists artifacts for a given build.",
     {
       project: z.string().describe("The name or ID of the project."),
-      buildId: z.number().describe("The ID of the build."),
+      buildId: z.coerce.number().min(1).describe("The ID of the build."),
     },
     async ({ project, buildId }) => {
       const connection = await connectionProvider();
@@ -535,11 +535,22 @@ function configurePipelineTools(server: McpServer, tokenProvider: () => Promise<
     "Downloads a pipeline artifact.",
     {
       project: z.string().describe("The name or ID of the project."),
-      buildId: z.number().describe("The ID of the build."),
+      buildId: z.coerce.number().min(1).describe("The ID of the build."),
       artifactName: z.string().describe("The name of the artifact to download."),
       destinationPath: z.string().optional().describe("The local path to download the artifact to. If not provided, returns binary content as base64."),
     },
     async ({ project, buildId, artifactName, destinationPath }) => {
+      const isAbsolutePath = (value: string) => posix.isAbsolute(value) || win32.isAbsolute(value);
+      const hasDriveLetter = (value: string) => /^[a-zA-Z]:/.test(value);
+
+      if (artifactName.includes("..")) {
+        throw new Error("Invalid artifactName: path traversal is not allowed.");
+      }
+
+      if (destinationPath && (destinationPath.includes("..") || isAbsolutePath(destinationPath) || hasDriveLetter(destinationPath))) {
+        throw new Error("Invalid destinationPath: absolute paths and path traversals are not allowed.");
+      }
+
       const connection = await connectionProvider();
       const buildApi = await connection.getBuildApi();
       const artifact = await buildApi.getArtifact(project, buildId, artifactName);

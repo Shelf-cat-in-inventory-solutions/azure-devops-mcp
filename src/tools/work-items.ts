@@ -20,6 +20,7 @@ const WORKITEM_TOOLS = {
   list_work_item_revisions: "wit_list_work_item_revisions",
   get_work_items_for_iteration: "wit_get_work_items_for_iteration",
   add_work_item_comment: "wit_add_work_item_comment",
+  update_work_item_comment: "wit_update_work_item_comment",
   add_child_work_items: "wit_add_child_work_items",
   link_work_item_to_pull_request: "wit_link_work_item_to_pull_request",
   get_work_item_type: "wit_get_work_item_type",
@@ -29,6 +30,7 @@ const WORKITEM_TOOLS = {
   work_items_link: "wit_work_items_link",
   work_item_unlink: "wit_work_item_unlink",
   add_artifact_link: "wit_add_artifact_link",
+  get_work_item_attachment: "wit_get_work_item_attachment",
 };
 
 function getLinkTypeFromName(name: string) {
@@ -125,7 +127,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
     {
       project: z.string().describe("The name or ID of the Azure DevOps project."),
       type: z.enum(["assignedtome", "myactivity"]).default("assignedtome").describe("The type of work items to retrieve. Defaults to 'assignedtome'."),
-      top: z.number().default(50).describe("The maximum number of work items to return. Defaults to 50."),
+      top: z.coerce.number().default(50).describe("The maximum number of work items to return. Defaults to 50."),
       includeCompleted: z.boolean().default(false).describe("Whether to include completed work items. Defaults to false."),
     },
     async ({ project, type, top, includeCompleted }) => {
@@ -153,7 +155,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
     "Retrieve list of work items by IDs in batch.",
     {
       project: z.string().describe("The name or ID of the Azure DevOps project."),
-      ids: z.array(z.number()).describe("The IDs of the work items to retrieve."),
+      ids: z.array(z.coerce.number().min(1)).describe("The IDs of the work items to retrieve."),
       fields: z.array(z.string()).optional().describe("Optional list of fields to include in the response. If not provided, a hardcoded default set of fields will be used."),
     },
     async ({ project, ids, fields }) => {
@@ -212,7 +214,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
     WORKITEM_TOOLS.get_work_item,
     "Get a single work item by ID.",
     {
-      id: z.number().describe("The ID of the work item to retrieve."),
+      id: z.coerce.number().min(1).describe("The ID of the work item to retrieve."),
       project: z.string().describe("The name or ID of the Azure DevOps project."),
       fields: z.array(z.string()).optional().describe("Optional list of fields to include in the response. If not provided, all fields will be returned."),
       asOf: z.coerce.date().optional().describe("Optional date string to retrieve the work item as of a specific time. If not provided, the current state will be returned."),
@@ -247,8 +249,8 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
     "Retrieve list of comments for a work item by ID.",
     {
       project: z.string().describe("The name or ID of the Azure DevOps project."),
-      workItemId: z.number().describe("The ID of the work item to retrieve comments for."),
-      top: z.number().default(50).describe("Optional number of comments to retrieve. Defaults to all comments."),
+      workItemId: z.coerce.number().min(1).describe("The ID of the work item to retrieve comments for."),
+      top: z.coerce.number().default(50).describe("Optional number of comments to retrieve. Defaults to all comments."),
     },
     async ({ project, workItemId, top }) => {
       try {
@@ -274,7 +276,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
     "Add comment to a work item by ID.",
     {
       project: z.string().describe("The name or ID of the Azure DevOps project."),
-      workItemId: z.number().describe("The ID of the work item to add a comment to."),
+      workItemId: z.coerce.number().min(1).describe("The ID of the work item to add a comment to."),
       comment: z.string().describe("The text of the comment to add to the work item."),
       format: z.enum(["markdown", "html"]).optional().default("html"),
     },
@@ -289,7 +291,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
         };
 
         const formatParameter = format === "markdown" ? 0 : 1;
-        const response = await fetch(`${orgUrl}/${project}/_apis/wit/workItems/${workItemId}/comments?format=${formatParameter}&api-version=${markdownCommentsApiVersion}`, {
+        const response = await fetch(`${orgUrl}/${encodeURIComponent(project)}/_apis/wit/workItems/${workItemId}/comments?format=${formatParameter}&api-version=${markdownCommentsApiVersion}`, {
           method: "POST",
           headers: {
             "Authorization": `Bearer ${accessToken}`,
@@ -319,13 +321,63 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
   );
 
   server.tool(
+    WORKITEM_TOOLS.update_work_item_comment,
+    "Update an existing comment on a work item by ID.",
+    {
+      project: z.string().describe("The name or ID of the Azure DevOps project."),
+      workItemId: z.coerce.number().min(1).describe("The ID of the work item."),
+      commentId: z.coerce.number().min(1).describe("The ID of the comment to update."),
+      text: z.string().describe("The updated comment text."),
+      format: z.enum(["markdown", "html"]).optional().default("html"),
+    },
+    async ({ project, workItemId, commentId, text, format }) => {
+      try {
+        const connection = await connectionProvider();
+        const orgUrl = connection.serverUrl;
+        const accessToken = await tokenProvider();
+        const body: Record<string, string> = { text };
+
+        const formatParameter = format === "markdown" ? 0 : 1;
+        const response = await fetch(
+          `${orgUrl}/${encodeURIComponent(project)}/_apis/wit/workItems/${workItemId}/comments/${commentId}?format=${formatParameter}&api-version=${markdownCommentsApiVersion}`,
+          {
+            method: "PATCH",
+            headers: {
+              "Authorization": `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+              "User-Agent": userAgentProvider(),
+            },
+            body: JSON.stringify(body),
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(`Failed to update work item comment: ${response.statusText}`);
+        }
+
+        const updatedComment = await response.text();
+
+        return {
+          content: [{ type: "text", text: updatedComment }],
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+        return {
+          content: [{ type: "text", text: `Error updating work item comment: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
     WORKITEM_TOOLS.list_work_item_revisions,
     "Retrieve list of revisions for a work item by ID.",
     {
       project: z.string().describe("The name or ID of the Azure DevOps project."),
-      workItemId: z.number().describe("The ID of the work item to retrieve revisions for."),
-      top: z.number().default(50).describe("Optional number of revisions to retrieve. If not provided, all revisions will be returned."),
-      skip: z.number().optional().describe("Optional number of revisions to skip for pagination. Defaults to 0."),
+      workItemId: z.coerce.number().min(1).describe("The ID of the work item to retrieve revisions for."),
+      top: z.coerce.number().default(50).describe("Optional number of revisions to retrieve. If not provided, all revisions will be returned."),
+      skip: z.coerce.number().optional().describe("Optional number of revisions to skip for pagination. Defaults to 0."),
       expand: z
         .enum(getEnumKeys(WorkItemExpand) as [string, ...string[]])
         .default("None")
@@ -383,7 +435,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
     WORKITEM_TOOLS.add_child_work_items,
     "Create one or many child work items from a parent by work item type and parent id.",
     {
-      parentId: z.number().describe("The ID of the parent work item to create a child work item under."),
+      parentId: z.coerce.number().min(1).describe("The ID of the parent work item to create a child work item under."),
       project: z.string().describe("The name or ID of the Azure DevOps project."),
       workItemType: z.string().describe("The type of the child work item to create."),
       items: z.array(
@@ -475,7 +527,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
 
           return {
             method: "PATCH",
-            uri: `/${project}/_apis/wit/workitems/$${workItemType}?api-version=${batchApiVersion}`,
+            uri: `/${encodeURIComponent(project)}/_apis/wit/workitems/$${encodeURIComponent(workItemType)}?api-version=${batchApiVersion}`,
             headers: {
               "Content-Type": "application/json-patch+json",
             },
@@ -519,8 +571,8 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
     {
       projectId: z.string().describe("The project ID of the Azure DevOps project (note: project name is not valid)."),
       repositoryId: z.string().describe("The ID of the repository containing the pull request. Do not use the repository name here, use the ID instead."),
-      pullRequestId: z.number().describe("The ID of the pull request to link to."),
-      workItemId: z.number().describe("The ID of the work item to link to the pull request."),
+      pullRequestId: z.coerce.number().min(1).describe("The ID of the pull request to link to."),
+      workItemId: z.coerce.number().min(1).describe("The ID of the work item to link to the pull request."),
       pullRequestProjectId: z.string().optional().describe("The project ID containing the pull request. If not provided, defaults to the work item's project ID (for same-project linking)."),
     },
     async ({ projectId, repositoryId, pullRequestId, workItemId, pullRequestProjectId }) => {
@@ -616,7 +668,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
     WORKITEM_TOOLS.update_work_item,
     "Update a work item by ID with specified fields.",
     {
-      id: z.number().describe("The ID of the work item to update."),
+      id: z.coerce.number().min(1).describe("The ID of the work item to update."),
       updates: z
         .array(
           z.object({
@@ -755,7 +807,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
         .enum(getEnumKeys(QueryExpand) as [string, ...string[]])
         .optional()
         .describe("Optional expand parameter to include additional details in the response. Defaults to 'None'."),
-      depth: z.number().default(0).describe("Optional depth parameter to specify how deep to expand the query. Defaults to 0."),
+      depth: z.coerce.number().default(0).describe("Optional depth parameter to specify how deep to expand the query. Defaults to 0."),
       includeDeleted: z.boolean().default(false).describe("Whether to include deleted items in the query results. Defaults to false."),
       useIsoDateFormat: z.boolean().default(false).describe("Whether to use ISO date format in the response. Defaults to false."),
     },
@@ -787,7 +839,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
       project: z.string().optional().describe("The name or ID of the Azure DevOps project. If not provided, the default project will be used."),
       team: z.string().optional().describe("The name or ID of the Azure DevOps team. If not provided, the default team will be used."),
       timePrecision: z.boolean().optional().describe("Whether to include time precision in the results. Defaults to false."),
-      top: z.number().default(50).describe("The maximum number of results to return. Defaults to 50."),
+      top: z.coerce.number().default(50).describe("The maximum number of results to return. Defaults to 50."),
       responseType: z.enum(["full", "ids"]).default("full").describe("Response type: 'full' returns complete query results (default), 'ids' returns only work item IDs for reduced payload size."),
     },
     async ({ id, project, team, timePrecision, top, responseType }) => {
@@ -827,7 +879,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
         .array(
           z.object({
             op: z.enum(["Add", "Replace", "Remove"]).default("Add").describe("The operation to perform on the field."),
-            id: z.number().describe("The ID of the work item to update."),
+            id: z.coerce.number().min(1).describe("The ID of the work item to update."),
             path: z.string().describe("The path of the field to update, e.g., '/fields/System.Title'."),
             value: z.string().describe("The new value for the field. This is required for 'add' and 'replace' operations, and should be omitted for 'remove' operations."),
             format: z.enum(["Html", "Markdown"]).optional().describe("The format of the field value. Only to be used for large text fields. e.g., 'Html', 'Markdown'. Optional, defaults to 'Html'."),
@@ -910,8 +962,8 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
       updates: z
         .array(
           z.object({
-            id: z.number().describe("The ID of the work item to update."),
-            linkToId: z.number().describe("The ID of the work item to link to."),
+            id: z.coerce.number().min(1).describe("The ID of the work item to update."),
+            linkToId: z.coerce.number().min(1).describe("The ID of the work item to link to."),
             type: z
               .enum(["parent", "child", "duplicate", "duplicate of", "related", "successor", "predecessor", "tested by", "tests", "affects", "affected by"])
               .default("related")
@@ -987,7 +1039,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
     "Remove one or many links from a single work item",
     {
       project: z.string().describe("The name or ID of the Azure DevOps project."),
-      id: z.number().describe("The ID of the work item to remove the links from."),
+      id: z.coerce.number().min(1).describe("The ID of the work item to remove the links from."),
       type: z
         .enum(["parent", "child", "duplicate", "duplicate of", "related", "successor", "predecessor", "tested by", "tests", "affects", "affected by", "artifact"])
         .default("related")
@@ -1065,7 +1117,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
     WORKITEM_TOOLS.add_artifact_link,
     "Add artifact links (repository, branch, commit, builds) to work items. You can either provide the full vstfs URI or the individual components to build it automatically.",
     {
-      workItemId: z.number().describe("The ID of the work item to add the artifact link to."),
+      workItemId: z.coerce.number().min(1).describe("The ID of the work item to add the artifact link to."),
       project: z.string().describe("The name or ID of the Azure DevOps project."),
 
       // Option 1: Provide full URI directly
@@ -1076,8 +1128,8 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
       repositoryId: z.string().optional().describe("The repository ID (GUID) containing the artifact. Required for Git artifacts when artifactUri is not provided."),
       branchName: z.string().optional().describe("The branch name (e.g., 'main'). Required when linkType is 'Branch'."),
       commitId: z.string().optional().describe("The commit SHA hash. Required when linkType is 'Fixed in Commit'."),
-      pullRequestId: z.number().optional().describe("The pull request ID. Required when linkType is 'Pull Request'."),
-      buildId: z.number().optional().describe("The build ID. Required when linkType is 'Build', 'Found in build', or 'Integrated in build'."),
+      pullRequestId: z.coerce.number().min(1).optional().describe("The pull request ID. Required when linkType is 'Pull Request'."),
+      buildId: z.coerce.number().min(1).optional().describe("The build ID. Required when linkType is 'Build', 'Found in build', or 'Integrated in build'."),
 
       linkType: z
         .enum([
@@ -1214,6 +1266,70 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
       }
     }
   );
+
+  server.tool(
+    WORKITEM_TOOLS.get_work_item_attachment,
+    "Download a work item attachment by its ID and return the content as a base64-encoded resource. Useful for viewing images (e.g. screenshots) attached to work items such as bugs.",
+    {
+      project: z.string().describe("The name or ID of the Azure DevOps project."),
+      attachmentId: z.string().describe("The GUID of the attachment. Found in the attachment URL: https://dev.azure.com/{org}/{project}/_apis/wit/attachments/{attachmentId}"),
+      fileName: z.string().optional().describe("The file name of the attachment, e.g. 'screenshot.png'. Used to determine the MIME type for the returned resource."),
+    },
+    async ({ project, attachmentId, fileName }) => {
+      try {
+        const connection = await connectionProvider();
+        const workItemApi = await connection.getWorkItemTrackingApi();
+        const stream = await workItemApi.getAttachmentContent(attachmentId, fileName, project);
+
+        const chunks: Buffer[] = [];
+        await new Promise<void>((resolve, reject) => {
+          stream.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+          stream.on("end", resolve);
+          stream.on("error", reject);
+        });
+
+        const buffer = Buffer.concat(chunks);
+        const base64Data = buffer.toString("base64");
+        const mimeType = getMimeType(fileName);
+
+        return {
+          content: [
+            {
+              type: "resource",
+              resource: {
+                uri: `data:${mimeType};base64,${base64Data}`,
+                mimeType,
+                blob: base64Data,
+              },
+            },
+          ],
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+        return {
+          content: [{ type: "text", text: `Error retrieving work item attachment: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+}
+
+function getMimeType(fileName: string | undefined): string {
+  const ext = fileName?.split(".").pop()?.toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    bmp: "image/bmp",
+    svg: "image/svg+xml",
+    webp: "image/webp",
+    pdf: "application/pdf",
+    txt: "text/plain",
+    zip: "application/zip",
+  };
+  return (ext && mimeTypes[ext]) ?? "application/octet-stream";
 }
 
 export { WORKITEM_TOOLS, configureWorkItemTools };

@@ -20,12 +20,14 @@ import {
   GitPullRequest,
   GitPullRequestCommentThread,
   Comment,
+  VersionControlChangeType,
+  VersionControlRecursionType,
 } from "azure-devops-node-api/interfaces/GitInterfaces.js";
 import { z } from "zod";
 import { getCurrentUserDetails, getUserIdFromEmail } from "./auth.js";
 import { GitRepository } from "azure-devops-node-api/interfaces/TfvcInterfaces.js";
 import { WebApiTagDefinition } from "azure-devops-node-api/interfaces/CoreInterfaces.js";
-import { getEnumKeys } from "../utils.js";
+import { getEnumKeys, streamToString } from "../utils.js";
 
 const REPO_TOOLS = {
   list_repos_by_project: "repo_list_repos_by_project",
@@ -37,6 +39,7 @@ const REPO_TOOLS = {
   get_repo_by_name_or_id: "repo_get_repo_by_name_or_id",
   get_branch_by_name: "repo_get_branch_by_name",
   get_pull_request_by_id: "repo_get_pull_request_by_id",
+  get_pull_request_changes: "repo_get_pull_request_changes",
   create_pull_request: "repo_create_pull_request",
   create_branch: "repo_create_branch",
   update_pull_request: "repo_update_pull_request",
@@ -46,6 +49,9 @@ const REPO_TOOLS = {
   update_pull_request_thread: "repo_update_pull_request_thread",
   search_commits: "repo_search_commits",
   list_pull_requests_by_commits: "repo_list_pull_requests_by_commits",
+  vote_pull_request: "repo_vote_pull_request",
+  list_directory: "repo_list_directory",
+  get_file_content: "repo_get_file_content",
 };
 
 function branchesFilterOutIrrelevantProperties(branches: GitRef[], top: number) {
@@ -113,7 +119,10 @@ function filterReposByName(repositories: GitRepository[], repoNameFilter: string
   return filteredByName;
 }
 
-function trimPullRequest(pr: GitPullRequest, includeDescription = false) {
+function trimPullRequest(pr: GitPullRequest | null | undefined, includeDescription = false) {
+  if (!pr) {
+    return null;
+  }
   return {
     pullRequestId: pr.pullRequestId,
     codeReviewId: pr.codeReviewId,
@@ -134,22 +143,43 @@ function trimPullRequest(pr: GitPullRequest, includeDescription = false) {
   };
 }
 
+// Helper function to build a version descriptor from branch or commit
+function buildVersionDescriptor(version?: string, versionType?: string): GitVersionDescriptor | undefined {
+  if (!version) {
+    return undefined;
+  }
+
+  const versionTypeMap: Record<string, GitVersionType> = {
+    Branch: GitVersionType.Branch,
+    Commit: GitVersionType.Commit,
+    Tag: GitVersionType.Tag,
+  };
+
+  return {
+    version: version,
+    versionType: versionTypeMap[versionType || "Branch"] ?? GitVersionType.Branch,
+  };
+}
+
 function configureRepoTools(server: McpServer, tokenProvider: () => Promise<string>, connectionProvider: () => Promise<WebApi>, userAgentProvider: () => string) {
   server.tool(
     REPO_TOOLS.create_pull_request,
     "Create a new pull request.",
     {
-      repositoryId: z.string().describe("The ID of the repository where the pull request will be created."),
+      repositoryId: z
+        .string()
+        .describe("The ID or name of the repository where the pull request will be created. When using a repository name instead of a GUID, the project parameter must also be provided."),
       sourceRefName: z.string().describe("The source branch name for the pull request, e.g., 'refs/heads/feature-branch'."),
       targetRefName: z.string().describe("The target branch name for the pull request, e.g., 'refs/heads/main'."),
       title: z.string().describe("The title of the pull request."),
       description: z.string().max(4000).optional().describe("The description of the pull request. Must not be longer than 4000 characters. Optional."),
       isDraft: z.boolean().optional().default(false).describe("Indicates whether the pull request is a draft. Defaults to false."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
       workItems: z.string().optional().describe("Work item IDs to associate with the pull request, space-separated."),
       forkSourceRepositoryId: z.string().optional().describe("The ID of the fork repository that the pull request originates from. Optional, used when creating a pull request from a fork."),
       labels: z.array(z.string()).optional().describe("Array of label names to add to the pull request after creation."),
     },
-    async ({ repositoryId, sourceRefName, targetRefName, title, description, isDraft, workItems, forkSourceRepositoryId, labels }) => {
+    async ({ repositoryId, sourceRefName, targetRefName, title, description, isDraft, project, workItems, forkSourceRepositoryId, labels }) => {
       try {
         const connection = await connectionProvider();
         const gitApi = await connection.getGitApi();
@@ -165,7 +195,7 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
 
         const labelDefinitions: WebApiTagDefinition[] | undefined = labels ? labels.map((label) => ({ name: label })) : undefined;
 
-        const pullRequest = await gitApi.createPullRequest(
+        let pullRequest = await gitApi.createPullRequest(
           {
             sourceRefName,
             targetRefName,
@@ -177,10 +207,28 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
             labels: labelDefinitions,
             supportsIterations: true,
           },
-          repositoryId
+          repositoryId,
+          project
         );
 
+        if (!pullRequest) {
+          const prs = await gitApi.getPullRequests(repositoryId, { sourceRefName, targetRefName, status: PullRequestStatus.Active }, project, undefined, 0, 1);
+          if (prs && prs.length > 0) {
+            pullRequest = prs[0];
+          } else {
+            return {
+              content: [{ type: "text", text: "Pull request created but API returned no data." }],
+            };
+          }
+        }
+
         const trimmedPullRequest = trimPullRequest(pullRequest, true);
+
+        if (!trimmedPullRequest) {
+          return {
+            content: [{ type: "text", text: "Pull request created but API returned no data." }],
+          };
+        }
 
         return {
           content: [{ type: "text", text: JSON.stringify(trimmedPullRequest, null, 2) }],
@@ -200,12 +248,15 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
     REPO_TOOLS.create_branch,
     "Create a new branch in the repository.",
     {
-      repositoryId: z.string().describe("The ID of the repository where the branch will be created."),
+      repositoryId: z
+        .string()
+        .describe("The ID or name of the repository where the branch will be created. When using a repository name instead of a GUID, the project parameter must also be provided."),
       branchName: z.string().describe("The name of the new branch to create, e.g., 'feature-branch'."),
       sourceBranchName: z.string().optional().default("main").describe("The name of the source branch to create the new branch from. Defaults to 'main'."),
       sourceCommitId: z.string().optional().describe("The commit ID to create the branch from. If not provided, uses the latest commit of the source branch."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
     },
-    async ({ repositoryId, branchName, sourceBranchName, sourceCommitId }) => {
+    async ({ repositoryId, branchName, sourceBranchName, sourceCommitId, project }) => {
       try {
         const connection = await connectionProvider();
         const gitApi = await connection.getGitApi();
@@ -216,7 +267,7 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
         if (!commitId) {
           const sourceRefName = `refs/heads/${sourceBranchName}`;
           try {
-            const sourceBranch = await gitApi.getRefs(repositoryId, undefined, "heads/", false, false, undefined, false, undefined, sourceBranchName);
+            const sourceBranch = await gitApi.getRefs(repositoryId, project, "heads/", false, false, undefined, false, undefined, sourceBranchName);
             const branch = sourceBranch.find((b) => b.name === sourceRefName);
             if (!branch || !branch.objectId) {
               return {
@@ -252,7 +303,7 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
         };
 
         try {
-          const result = await gitApi.updateRefs([refUpdate], repositoryId);
+          const result = await gitApi.updateRefs([refUpdate], repositoryId, project);
 
           // Check if the branch creation was successful
           if (result && result.length > 0 && result[0].success) {
@@ -302,8 +353,9 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
     REPO_TOOLS.update_pull_request,
     "Update a Pull Request by ID with specified fields, including setting autocomplete with various completion options.",
     {
-      repositoryId: z.string().describe("The ID of the repository where the pull request exists."),
-      pullRequestId: z.number().describe("The ID of the pull request to update."),
+      repositoryId: z.string().describe("The ID or name of the repository where the pull request exists. When using a repository name instead of a GUID, the project parameter must also be provided."),
+      pullRequestId: z.coerce.number().min(1).describe("The ID of the pull request to update."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
       title: z.string().optional().describe("The new title for the pull request."),
       description: z.string().max(4000).optional().describe("The new description for the pull request. Must not be longer than 4000 characters."),
       isDraft: z.boolean().optional().describe("Whether the pull request should be a draft."),
@@ -319,7 +371,22 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
       bypassReason: z.string().optional().describe("Reason for bypassing branch policies. When provided, branch policies will be automatically bypassed during autocompletion."),
       labels: z.array(z.string()).optional().describe("Array of label names to replace existing labels on the pull request. This will remove all current labels and add the specified ones."),
     },
-    async ({ repositoryId, pullRequestId, title, description, isDraft, targetRefName, status, autoComplete, mergeStrategy, deleteSourceBranch, transitionWorkItems, bypassReason, labels }) => {
+    async ({
+      repositoryId,
+      pullRequestId,
+      project,
+      title,
+      description,
+      isDraft,
+      targetRefName,
+      status,
+      autoComplete,
+      mergeStrategy,
+      deleteSourceBranch,
+      transitionWorkItems,
+      bypassReason,
+      labels,
+    }) => {
       try {
         const connection = await connectionProvider();
         const gitApi = await connection.getGitApi();
@@ -372,26 +439,32 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
 
         // Update labels if provided
         if (labels) {
-          const currentLabels = await gitApi.getPullRequestLabels(repositoryId, pullRequestId);
+          const currentLabels = await gitApi.getPullRequestLabels(repositoryId, pullRequestId, project);
           for (const currentLabel of currentLabels) {
             if (currentLabel.id) {
-              await gitApi.deletePullRequestLabels(repositoryId, pullRequestId, currentLabel.id);
+              await gitApi.deletePullRequestLabels(repositoryId, pullRequestId, currentLabel.id, project);
             }
           }
           for (const label of labels) {
-            await gitApi.createPullRequestLabel({ name: label }, repositoryId, pullRequestId);
+            await gitApi.createPullRequestLabel({ name: label }, repositoryId, pullRequestId, project);
           }
         }
 
         let updatedPullRequest;
         if (Object.keys(updateRequest).length > 0) {
-          updatedPullRequest = await gitApi.updatePullRequest(updateRequest, repositoryId, pullRequestId);
+          updatedPullRequest = await gitApi.updatePullRequest(updateRequest, repositoryId, pullRequestId, project);
         } else {
           // If only labels were updated, get the current pull request
-          updatedPullRequest = await gitApi.getPullRequest(repositoryId, pullRequestId);
+          updatedPullRequest = await gitApi.getPullRequest(repositoryId, pullRequestId, project);
         }
 
         const trimmedUpdatedPullRequest = trimPullRequest(updatedPullRequest, true);
+
+        if (!trimmedUpdatedPullRequest) {
+          return {
+            content: [{ type: "text", text: "Pull request updated but API returned no data." }],
+          };
+        }
 
         return {
           content: [{ type: "text", text: JSON.stringify(trimmedUpdatedPullRequest, null, 2) }],
@@ -411,12 +484,13 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
     REPO_TOOLS.update_pull_request_reviewers,
     "Add or remove reviewers for an existing pull request.",
     {
-      repositoryId: z.string().describe("The ID of the repository where the pull request exists."),
-      pullRequestId: z.number().describe("The ID of the pull request to update."),
+      repositoryId: z.string().describe("The ID or name of the repository where the pull request exists. When using a repository name instead of a GUID, the project parameter must also be provided."),
+      pullRequestId: z.coerce.number().min(1).describe("The ID of the pull request to update."),
       reviewerIds: z.array(z.string()).describe("List of reviewer ids to add or remove from the pull request."),
       action: z.enum(["add", "remove"]).describe("Action to perform on the reviewers. Can be 'add' or 'remove'."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
     },
-    async ({ repositoryId, pullRequestId, reviewerIds, action }) => {
+    async ({ repositoryId, pullRequestId, reviewerIds, action, project }) => {
       try {
         const connection = await connectionProvider();
         const gitApi = await connection.getGitApi();
@@ -426,7 +500,8 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
           updatedPullRequest = await gitApi.createPullRequestReviewers(
             reviewerIds.map((id) => ({ id: id })),
             repositoryId,
-            pullRequestId
+            pullRequestId,
+            project
           );
 
           const trimmedResponse = updatedPullRequest.map((item) => ({
@@ -443,7 +518,7 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
           };
         } else {
           for (const reviewerId of reviewerIds) {
-            await gitApi.deletePullRequestReviewer(repositoryId, pullRequestId, reviewerId);
+            await gitApi.deletePullRequestReviewer(repositoryId, pullRequestId, reviewerId, project);
           }
 
           return {
@@ -466,8 +541,8 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
     "Retrieve a list of repositories for a given project",
     {
       project: z.string().describe("The name or ID of the Azure DevOps project."),
-      top: z.number().default(100).describe("The maximum number of repositories to return."),
-      skip: z.number().default(0).describe("The number of repositories to skip. Defaults to 0."),
+      top: z.coerce.number().default(100).describe("The maximum number of repositories to return."),
+      skip: z.coerce.number().default(0).describe("The number of repositories to skip. Defaults to 0."),
       repoNameFilter: z.string().optional().describe("Optional filter to search for repositories by name. If provided, only repositories with names containing this string will be returned."),
     },
     async ({ project, top, skip, repoNameFilter }) => {
@@ -509,10 +584,13 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
     REPO_TOOLS.list_pull_requests_by_repo_or_project,
     "Retrieve a list of pull requests for a given repository. Either repositoryId or project must be provided.",
     {
-      repositoryId: z.string().optional().describe("The ID of the repository where the pull requests are located."),
-      project: z.string().optional().describe("The ID of the project where the pull requests are located."),
-      top: z.number().default(100).describe("The maximum number of pull requests to return."),
-      skip: z.number().default(0).describe("The number of pull requests to skip."),
+      repositoryId: z
+        .string()
+        .optional()
+        .describe("The ID or name of the repository where the pull requests are located. When using a repository name instead of a GUID, the project parameter must also be provided."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID, or to scope the search to a specific project."),
+      top: z.coerce.number().default(100).describe("The maximum number of pull requests to return."),
+      skip: z.coerce.number().default(0).describe("The number of pull requests to skip."),
       created_by_me: z.boolean().default(false).describe("Filter pull requests created by the current user."),
       created_by_user: z.string().optional().describe("Filter pull requests created by a specific user (provide email or unique name). Takes precedence over created_by_me if both are provided."),
       i_am_reviewer: z.boolean().default(false).describe("Filter pull requests where the current user is a reviewer."),
@@ -662,13 +740,15 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
     REPO_TOOLS.list_pull_request_threads,
     "Retrieve a list of comment threads for a pull request.",
     {
-      repositoryId: z.string().describe("The ID of the repository where the pull request is located."),
-      pullRequestId: z.number().describe("The ID of the pull request for which to retrieve threads."),
-      project: z.string().optional().describe("Project ID or project name (optional)"),
-      iteration: z.number().optional().describe("The iteration ID for which to retrieve threads. Optional, defaults to the latest iteration."),
-      baseIteration: z.number().optional().describe("The base iteration ID for which to retrieve threads. Optional, defaults to the latest base iteration."),
-      top: z.number().default(100).describe("The maximum number of threads to return after filtering."),
-      skip: z.number().default(0).describe("The number of threads to skip after filtering."),
+      repositoryId: z
+        .string()
+        .describe("The ID or name of the repository where the pull request is located. When using a repository name instead of a GUID, the project parameter must also be provided."),
+      pullRequestId: z.coerce.number().min(1).describe("The ID of the pull request for which to retrieve threads."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
+      iteration: z.coerce.number().min(1).optional().describe("The iteration ID for which to retrieve threads. Optional, defaults to the latest iteration."),
+      baseIteration: z.coerce.number().min(1).optional().describe("The base iteration ID for which to retrieve threads. Optional, defaults to the latest base iteration."),
+      top: z.coerce.number().default(100).describe("The maximum number of threads to return after filtering."),
+      skip: z.coerce.number().default(0).describe("The number of threads to skip after filtering."),
       fullResponse: z.boolean().optional().default(false).describe("Return full thread JSON response instead of trimmed data."),
       status: z
         .enum(getEnumKeys(CommentThreadStatus) as [string, ...string[]])
@@ -735,12 +815,14 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
     REPO_TOOLS.list_pull_request_thread_comments,
     "Retrieve a list of comments in a pull request thread.",
     {
-      repositoryId: z.string().describe("The ID of the repository where the pull request is located."),
-      pullRequestId: z.number().describe("The ID of the pull request for which to retrieve thread comments."),
-      threadId: z.number().describe("The ID of the thread for which to retrieve comments."),
-      project: z.string().optional().describe("Project ID or project name (optional)"),
-      top: z.number().default(100).describe("The maximum number of comments to return."),
-      skip: z.number().default(0).describe("The number of comments to skip."),
+      repositoryId: z
+        .string()
+        .describe("The ID or name of the repository where the pull request is located. When using a repository name instead of a GUID, the project parameter must also be provided."),
+      pullRequestId: z.coerce.number().min(1).describe("The ID of the pull request for which to retrieve thread comments."),
+      threadId: z.coerce.number().min(1).describe("The ID of the thread for which to retrieve comments."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
+      top: z.coerce.number().default(100).describe("The maximum number of comments to return."),
+      skip: z.coerce.number().default(0).describe("The number of comments to skip."),
       fullResponse: z.boolean().optional().default(false).describe("Return full comment JSON response instead of trimmed data."),
     },
     async ({ repositoryId, pullRequestId, threadId, project, top, skip, fullResponse }) => {
@@ -780,15 +862,18 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
     REPO_TOOLS.list_branches_by_repo,
     "Retrieve a list of branches for a given repository.",
     {
-      repositoryId: z.string().describe("The ID of the repository where the branches are located."),
-      top: z.number().default(100).describe("The maximum number of branches to return. Defaults to 100."),
+      repositoryId: z
+        .string()
+        .describe("The ID or name of the repository where the branches are located. When using a repository name instead of a GUID, the project parameter must also be provided."),
+      top: z.coerce.number().default(100).describe("The maximum number of branches to return. Defaults to 100."),
       filterContains: z.string().optional().describe("Filter to find branches that contain this string in their name."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
     },
-    async ({ repositoryId, top, filterContains }) => {
+    async ({ repositoryId, top, filterContains, project }) => {
       try {
         const connection = await connectionProvider();
         const gitApi = await connection.getGitApi();
-        const branches = await gitApi.getRefs(repositoryId, undefined, "heads/", undefined, undefined, undefined, undefined, undefined, filterContains);
+        const branches = await gitApi.getRefs(repositoryId, project, "heads/", undefined, undefined, undefined, undefined, undefined, filterContains);
 
         const filteredBranches = branchesFilterOutIrrelevantProperties(branches, top);
 
@@ -810,15 +895,18 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
     REPO_TOOLS.list_my_branches_by_repo,
     "Retrieve a list of my branches for a given repository Id.",
     {
-      repositoryId: z.string().describe("The ID of the repository where the branches are located."),
-      top: z.number().default(100).describe("The maximum number of branches to return."),
+      repositoryId: z
+        .string()
+        .describe("The ID or name of the repository where the branches are located. When using a repository name instead of a GUID, the project parameter must also be provided."),
+      top: z.coerce.number().default(100).describe("The maximum number of branches to return."),
       filterContains: z.string().optional().describe("Filter to find branches that contain this string in their name."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
     },
-    async ({ repositoryId, top, filterContains }) => {
+    async ({ repositoryId, top, filterContains, project }) => {
       try {
         const connection = await connectionProvider();
         const gitApi = await connection.getGitApi();
-        const branches = await gitApi.getRefs(repositoryId, undefined, "heads/", undefined, undefined, true, undefined, undefined, filterContains);
+        const branches = await gitApi.getRefs(repositoryId, project, "heads/", undefined, undefined, true, undefined, undefined, filterContains);
 
         const filteredBranches = branchesFilterOutIrrelevantProperties(branches, top);
 
@@ -876,14 +964,15 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
     REPO_TOOLS.get_branch_by_name,
     "Get a branch by its name.",
     {
-      repositoryId: z.string().describe("The ID of the repository where the branch is located."),
+      repositoryId: z.string().describe("The ID or name of the repository where the branch is located. When using a repository name instead of a GUID, the project parameter must also be provided."),
       branchName: z.string().describe("The name of the branch to retrieve, e.g., 'main' or 'feature-branch'."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
     },
-    async ({ repositoryId, branchName }) => {
+    async ({ repositoryId, branchName, project }) => {
       try {
         const connection = await connectionProvider();
         const gitApi = await connection.getGitApi();
-        const branches = await gitApi.getRefs(repositoryId, undefined, "heads/", false, false, undefined, false, undefined, branchName);
+        const branches = await gitApi.getRefs(repositoryId, project, "heads/", false, false, undefined, false, undefined, branchName);
         const branch = branches.find((branch) => branch.name === `refs/heads/${branchName}` || branch.name === branchName);
         if (!branch) {
           return {
@@ -914,16 +1003,19 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
     REPO_TOOLS.get_pull_request_by_id,
     "Get a pull request by its ID.",
     {
-      repositoryId: z.string().describe("The ID of the repository where the pull request is located."),
-      pullRequestId: z.number().describe("The ID of the pull request to retrieve."),
+      repositoryId: z
+        .string()
+        .describe("The ID or name of the repository where the pull request is located. When using a repository name instead of a GUID, the project parameter must also be provided."),
+      pullRequestId: z.coerce.number().min(1).describe("The ID of the pull request to retrieve."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
       includeWorkItemRefs: z.boolean().optional().default(false).describe("Whether to reference work items associated with the pull request."),
       includeLabels: z.boolean().optional().default(false).describe("Whether to include a summary of labels in the response."),
     },
-    async ({ repositoryId, pullRequestId, includeWorkItemRefs, includeLabels }) => {
+    async ({ repositoryId, pullRequestId, project, includeWorkItemRefs, includeLabels }) => {
       try {
         const connection = await connectionProvider();
         const gitApi = await connection.getGitApi();
-        const pullRequest = await gitApi.getPullRequest(repositoryId, pullRequestId, undefined, undefined, undefined, undefined, undefined, includeWorkItemRefs);
+        const pullRequest = await gitApi.getPullRequest(repositoryId, pullRequestId, project, undefined, undefined, undefined, undefined, includeWorkItemRefs);
 
         if (includeLabels) {
           try {
@@ -972,14 +1064,370 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
   );
 
   server.tool(
+    REPO_TOOLS.get_pull_request_changes,
+    "Get the file changes (diff) for a pull request iteration with actual code diff content. Returns the code changes including line-by-line diffs made in the pull request.",
+    {
+      repositoryId: z.string().describe("The ID of the repository where the pull request is located."),
+      pullRequestId: z.number().describe("The ID of the pull request to retrieve changes for."),
+      iterationId: z.number().optional().describe("The iteration ID to get changes for. If not specified, gets changes for the latest iteration."),
+      project: z.string().optional().describe("Project ID or project name (optional)"),
+      top: z.number().optional().describe("Maximum number of files to include diffs for. Default is 100."),
+      skip: z.number().optional().describe("Number of changes to skip for pagination."),
+      compareTo: z.number().optional().describe("Iteration ID to compare against. If specified, returns changes between two iterations."),
+      includeDiffs: z.boolean().optional().describe("Whether to include actual line-by-line diff content. Default is true. Set to false to get only file metadata."),
+      includeLineContent: z
+        .boolean()
+        .optional()
+        .describe(
+          "Whether to include the actual line content from the changed files. Default is true. When true, fetches file content and includes the actual code lines that were added/removed/modified."
+        ),
+    },
+    async ({ repositoryId, pullRequestId, iterationId, project, top, skip, compareTo, includeDiffs = true, includeLineContent = true }) => {
+      try {
+        const connection = await connectionProvider();
+        const gitApi = await connection.getGitApi();
+
+        // If repositoryId is a name (not a GUID), we need a project to resolve it.
+        // GUID pattern: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+        const isGuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(repositoryId);
+        if (!isGuid && !project) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Error: When using a repository name instead of a GUID for repositoryId, the 'project' parameter is required. Please either provide the project name/ID, or use repo_get_repo_by_name_or_id to resolve the repository GUID first.",
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // If no iteration ID provided, get the latest iteration
+        let targetIterationId = iterationId;
+        let targetIteration;
+        if (targetIterationId == null) {
+          const iterations = await gitApi.getPullRequestIterations(repositoryId, pullRequestId, project);
+          if (!iterations || iterations.length === 0) {
+            return {
+              content: [{ type: "text", text: "No iterations found for this pull request." }],
+              isError: true,
+            };
+          }
+          // Get the latest iteration
+          targetIteration = iterations[iterations.length - 1];
+          targetIterationId = targetIteration.id;
+        } else {
+          // Get the specific iteration
+          targetIteration = await gitApi.getPullRequestIteration(repositoryId, pullRequestId, targetIterationId, project);
+        }
+
+        // Get the file change metadata
+        const changes = await gitApi.getPullRequestIterationChanges(repositoryId, pullRequestId, targetIterationId ?? 1, project, top, skip, compareTo);
+
+        // If includeDiffs is false, just return the metadata
+        if (!includeDiffs) {
+          return {
+            content: [{ type: "text", text: JSON.stringify(changes, null, 2) }],
+          };
+        }
+
+        // Get actual diff content using getFileDiffs
+        if (changes.changeEntries && changes.changeEntries.length > 0 && targetIteration) {
+          // Determine base and target commits
+          const baseCommitId = compareTo
+            ? (await gitApi.getPullRequestIteration(repositoryId, pullRequestId, compareTo, project)).sourceRefCommit?.commitId
+            : targetIteration.commonRefCommit?.commitId;
+          const targetCommitId = targetIteration.sourceRefCommit?.commitId;
+
+          if (baseCommitId && targetCommitId) {
+            // Build FileDiffsCriteria with paths from changeEntries
+            // Exclude added and deleted files as they don't have both versions to diff
+            // changeType is a flags enum so use bitwise AND to check
+            const fileDiffParams = changes.changeEntries
+              .filter((entry) => {
+                const ct = entry.changeType ?? 0;
+                return entry.item?.path && !(ct & VersionControlChangeType.Add) && !(ct & VersionControlChangeType.Delete);
+              })
+              .map((entry) => {
+                // Remove leading slash if present - Azure DevOps API expects relative paths
+                const itemPath = entry.item?.path ?? "";
+                const path = itemPath.startsWith("/") ? itemPath.substring(1) : itemPath;
+                // For renamed/moved files, use the original path from the change entry
+                const origPath = entry.originalPath ? (entry.originalPath.startsWith("/") ? entry.originalPath.substring(1) : entry.originalPath) : path;
+                return {
+                  path: path,
+                  originalPath: origPath,
+                };
+              });
+
+            if (fileDiffParams.length > 0) {
+              try {
+                // Azure DevOps getFileDiffs API accepts max 10 files per request
+                const FILE_DIFF_BATCH_SIZE = 10;
+                let fileDiffs: any[] = [];
+                for (let i = 0; i < fileDiffParams.length; i += FILE_DIFF_BATCH_SIZE) {
+                  const batch = fileDiffParams.slice(i, i + FILE_DIFF_BATCH_SIZE);
+                  const batchDiffs = await gitApi.getFileDiffs(
+                    {
+                      baseVersionCommit: baseCommitId,
+                      targetVersionCommit: targetCommitId,
+                      fileDiffParams: batch,
+                    },
+                    project || "",
+                    repositoryId
+                  );
+                  fileDiffs = fileDiffs.concat(batchDiffs);
+                }
+
+                // Merge diff content with change metadata
+                const enrichedChanges = {
+                  ...changes,
+                  changeEntries: changes.changeEntries.map((entry) => {
+                    // Normalize path for comparison (remove leading slash)
+                    const entryPath = entry.item?.path?.startsWith("/") ? entry.item.path.substring(1) : entry.item?.path;
+                    const matchingDiff = fileDiffs.find((diff) => diff.path === entryPath);
+                    return {
+                      ...entry,
+                      diff: matchingDiff || null,
+                    };
+                  }),
+                };
+
+                // If includeLineContent is true, fetch actual file content with concurrency limit
+                if (includeLineContent && enrichedChanges.changeEntries) {
+                  const CONCURRENCY_LIMIT = 10;
+                  const entriesWithContent = [...enrichedChanges.changeEntries];
+                  for (let i = 0; i < entriesWithContent.length; i += CONCURRENCY_LIMIT) {
+                    const batch = entriesWithContent.slice(i, i + CONCURRENCY_LIMIT);
+                    const batchResults = await Promise.all(
+                      batch.map(async (entry) => {
+                        const ct = entry.changeType ?? 0;
+                        const isAdd = !!(ct & VersionControlChangeType.Add);
+                        const isDelete = !!(ct & VersionControlChangeType.Delete);
+
+                        const entryPath = entry.item?.path?.startsWith("/") ? entry.item.path.substring(1) : entry.item?.path;
+
+                        if (!entryPath) {
+                          return entry;
+                        }
+
+                        // Handle added files: fetch full content at target commit and create synthetic diff
+                        if (isAdd && !entry.diff) {
+                          try {
+                            const targetStream = await gitApi
+                              .getItemText(repositoryId, entryPath, project, undefined, undefined, undefined, undefined, undefined, { version: targetCommitId, versionType: GitVersionType.Commit })
+                              .catch(() => null);
+                            if (targetStream) {
+                              const targetText = await streamToString(targetStream);
+                              const targetLines = targetText.split(/\r?\n/);
+                              return {
+                                ...entry,
+                                diff: {
+                                  path: entryPath,
+                                  originalPath: entryPath,
+                                  lineDiffBlocks: [
+                                    {
+                                      changeType: 1, // Add
+                                      originalLineNumberStart: 0,
+                                      originalLinesCount: 0,
+                                      modifiedLineNumberStart: 1,
+                                      modifiedLinesCount: targetLines.length,
+                                      modifiedLines: targetLines,
+                                    },
+                                  ],
+                                },
+                              };
+                            }
+                          } catch (addError) {
+                            return {
+                              ...entry,
+                              _contentFetchError: `Failed to fetch added file content: ${addError instanceof Error ? addError.message : "Unknown error"}`,
+                            };
+                          }
+                          return entry;
+                        }
+
+                        // Handle deleted files: fetch full content at base commit and create synthetic diff
+                        if (isDelete && !entry.diff) {
+                          try {
+                            const basePath = entry.originalPath ? (entry.originalPath.startsWith("/") ? entry.originalPath.substring(1) : entry.originalPath) : entryPath;
+                            const baseStream = await gitApi
+                              .getItemText(repositoryId, basePath, project, undefined, undefined, undefined, undefined, undefined, { version: baseCommitId, versionType: GitVersionType.Commit })
+                              .catch(() => null);
+                            if (baseStream) {
+                              const baseText = await streamToString(baseStream);
+                              const baseLines = baseText.split(/\r?\n/);
+                              return {
+                                ...entry,
+                                diff: {
+                                  path: entryPath,
+                                  originalPath: basePath,
+                                  lineDiffBlocks: [
+                                    {
+                                      changeType: 2, // Delete
+                                      originalLineNumberStart: 1,
+                                      originalLinesCount: baseLines.length,
+                                      modifiedLineNumberStart: 0,
+                                      modifiedLinesCount: 0,
+                                      originalLines: baseLines,
+                                    },
+                                  ],
+                                },
+                              };
+                            }
+                          } catch (delError) {
+                            return {
+                              ...entry,
+                              _contentFetchError: `Failed to fetch deleted file content: ${delError instanceof Error ? delError.message : "Unknown error"}`,
+                            };
+                          }
+                          return entry;
+                        }
+
+                        // For modified/renamed files, skip if no diff blocks
+                        if (!entry.diff?.lineDiffBlocks || entry.diff.lineDiffBlocks.length === 0) {
+                          return entry;
+                        }
+
+                        // For renamed/moved files, the base version is at the original path
+                        const basePath = entry.originalPath ? (entry.originalPath.startsWith("/") ? entry.originalPath.substring(1) : entry.originalPath) : entryPath;
+
+                        try {
+                          // Fetch file content at both commits
+                          const [baseContent, targetContent] = await Promise.all([
+                            // Base version (original) - use basePath for renamed files
+                            gitApi
+                              .getItemText(repositoryId, basePath, project, undefined, undefined, undefined, undefined, undefined, { version: baseCommitId, versionType: GitVersionType.Commit })
+                              .catch(() => null),
+                            // Target version (modified)
+                            gitApi
+                              .getItemText(repositoryId, entryPath, project, undefined, undefined, undefined, undefined, undefined, { version: targetCommitId, versionType: GitVersionType.Commit })
+                              .catch(() => null),
+                          ]);
+
+                          // Convert streams to text
+                          const baseText = baseContent ? await streamToString(baseContent) : "";
+                          const targetText = targetContent ? await streamToString(targetContent) : "";
+
+                          // Check if response is an Azure DevOps error (returned as JSON in the stream)
+                          const checkForApiError = (text: string, label: string) => {
+                            if (text.startsWith("{")) {
+                              try {
+                                const parsed = JSON.parse(text);
+                                if (parsed.$id && parsed.innerException !== undefined) {
+                                  throw new Error(`Failed to fetch ${label} file content: ${parsed.message || text}`);
+                                }
+                              } catch (e) {
+                                if (e instanceof Error && e.message.startsWith("Failed to fetch")) throw e;
+                                // Not valid JSON or not an error response — treat as legitimate content
+                              }
+                            }
+                          };
+                          checkForApiError(baseText, "base");
+                          checkForApiError(targetText, "target");
+
+                          // Split into lines
+                          const baseLines = baseText.split(/\r?\n/);
+                          const targetLines = targetText.split(/\r?\n/);
+
+                          // Enrich each lineDiffBlock with actual line content
+                          const enrichedDiff = {
+                            ...entry.diff,
+                            lineDiffBlocks: entry.diff.lineDiffBlocks?.map((block: any) => {
+                              const enrichedBlock: any = { ...block };
+
+                              // Add original (base) lines if they exist
+                              if (block.originalLineNumberStart && block.originalLinesCount) {
+                                const startIdx = block.originalLineNumberStart - 1;
+                                const endIdx = startIdx + block.originalLinesCount;
+                                enrichedBlock.originalLines = baseLines.slice(startIdx, endIdx);
+                              }
+
+                              // Add modified (target) lines if they exist
+                              if (block.modifiedLineNumberStart && block.modifiedLinesCount) {
+                                const startIdx = block.modifiedLineNumberStart - 1;
+                                const endIdx = startIdx + block.modifiedLinesCount;
+                                enrichedBlock.modifiedLines = targetLines.slice(startIdx, endIdx);
+                              }
+
+                              return enrichedBlock;
+                            }),
+                          };
+
+                          return {
+                            ...entry,
+                            diff: enrichedDiff,
+                          };
+                        } catch (contentError) {
+                          // If content fetch fails, return entry with error
+                          return {
+                            ...entry,
+                            _contentFetchError: `Failed to fetch line content: ${contentError instanceof Error ? contentError.message : "Unknown error"}`,
+                          };
+                        }
+                      })
+                    );
+                    // Write batch results back into the array
+                    for (let j = 0; j < batchResults.length; j++) {
+                      entriesWithContent[i + j] = batchResults[j];
+                    }
+                  }
+
+                  enrichedChanges.changeEntries = entriesWithContent;
+                }
+
+                return {
+                  content: [{ type: "text", text: JSON.stringify(enrichedChanges, null, 2) }],
+                };
+              } catch (diffError) {
+                // If diff fetching fails, return metadata with error info
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify(
+                        {
+                          ...changes,
+                          _diffError: `Failed to fetch diff content: ${diffError instanceof Error ? diffError.message : "Unknown error"}`,
+                          _note: "Returned metadata only",
+                        },
+                        null,
+                        2
+                      ),
+                    },
+                  ],
+                };
+              }
+            }
+          }
+        }
+
+        // Fallback: return metadata if we couldn't get diffs
+        return {
+          content: [{ type: "text", text: JSON.stringify(changes, null, 2) }],
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+
+        return {
+          content: [{ type: "text", text: `Error getting pull request changes: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
     REPO_TOOLS.reply_to_comment,
     "Replies to a specific comment on a pull request.",
     {
-      repositoryId: z.string().describe("The ID of the repository where the pull request is located."),
-      pullRequestId: z.number().describe("The ID of the pull request where the comment thread exists."),
-      threadId: z.number().describe("The ID of the thread to which the comment will be added."),
+      repositoryId: z
+        .string()
+        .describe("The ID or name of the repository where the pull request is located. When using a repository name instead of a GUID, the project parameter must also be provided."),
+      pullRequestId: z.coerce.number().min(1).describe("The ID of the pull request where the comment thread exists."),
+      threadId: z.coerce.number().min(1).describe("The ID of the thread to which the comment will be added."),
       content: z.string().describe("The content of the comment to be added."),
-      project: z.string().optional().describe("Project ID or project name (optional)"),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
       fullResponse: z.boolean().optional().default(false).describe("Return full comment JSON response instead of a simple confirmation message."),
     },
     async ({ repositoryId, pullRequestId, threadId, content, project, fullResponse }) => {
@@ -1020,17 +1468,23 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
     REPO_TOOLS.create_pull_request_thread,
     "Creates a new comment thread on a pull request.",
     {
-      repositoryId: z.string().describe("The ID of the repository where the pull request is located."),
-      pullRequestId: z.number().describe("The ID of the pull request where the comment thread exists."),
+      repositoryId: z
+        .string()
+        .describe("The ID or name of the repository where the pull request is located. When using a repository name instead of a GUID, the project parameter must also be provided."),
+      pullRequestId: z.coerce.number().min(1).describe("The ID of the pull request where the comment thread exists."),
       content: z.string().describe("The content of the comment to be added."),
-      project: z.string().optional().describe("Project ID or project name (optional)"),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
       filePath: z.string().optional().describe("The path of the file where the comment thread will be created. (optional)"),
       status: z
         .enum(getEnumKeys(CommentThreadStatus) as [string, ...string[]])
         .optional()
         .default(CommentThreadStatus[CommentThreadStatus.Active])
         .describe("The status of the comment thread. Defaults to 'Active'."),
-      rightFileStartLine: z.number().optional().describe("Position of first character of the thread's span in right file. The line number of a thread's position. Starts at 1. (optional)"),
+      rightFileStartLine: z.coerce
+        .number()
+        .min(1)
+        .optional()
+        .describe("Position of first character of the thread's span in right file. The line number of a thread's position. Starts at 1. (optional)"),
       rightFileStartOffset: z
         .number()
         .optional()
@@ -1168,10 +1622,12 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
     REPO_TOOLS.update_pull_request_thread,
     "Updates an existing comment thread on a pull request.",
     {
-      repositoryId: z.string().describe("The ID of the repository where the pull request is located."),
-      pullRequestId: z.number().describe("The ID of the pull request where the comment thread exists."),
-      threadId: z.number().describe("The ID of the thread to update."),
-      project: z.string().optional().describe("Project ID or project name (optional)"),
+      repositoryId: z
+        .string()
+        .describe("The ID or name of the repository where the pull request is located. When using a repository name instead of a GUID, the project parameter must also be provided."),
+      pullRequestId: z.coerce.number().min(1).describe("The ID of the pull request where the comment thread exists."),
+      threadId: z.coerce.number().min(1).describe("The ID of the thread to update."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
       status: z
         .enum(getEnumKeys(CommentThreadStatus) as [string, ...string[]])
         .optional()
@@ -1236,8 +1692,8 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
         .optional()
         .default(GitVersionType[GitVersionType.Branch])
         .describe("The meaning of the version parameter, e.g., branch, tag or commit"),
-      skip: z.number().optional().default(0).describe("Number of commits to skip"),
-      top: z.number().optional().default(10).describe("Maximum number of commits to return"),
+      skip: z.coerce.number().optional().default(0).describe("Number of commits to skip"),
+      top: z.coerce.number().optional().default(10).describe("Maximum number of commits to return"),
       includeLinks: z.boolean().optional().default(false).describe("Include commit links"),
       includeWorkItems: z.boolean().optional().default(false).describe("Include associated work items"),
       // Enhanced search parameters
@@ -1436,6 +1892,198 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<stri
 
         return {
           content: [{ type: "text", text: `Error querying pull requests by commits: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    REPO_TOOLS.vote_pull_request,
+    "Cast a vote on a pull request. Automatically adds the current user as a reviewer if they are not already one.",
+    {
+      repositoryId: z.string().describe("The ID or name of the repository. When using a repository name instead of a GUID, the project parameter must also be provided."),
+      pullRequestId: z.coerce.number().min(1).describe("The ID of the pull request."),
+      vote: z.enum(["Approved", "ApprovedWithSuggestions", "NoVote", "WaitingForAuthor", "Rejected"]).describe("The vote to cast: Approved(10), Suggestions(5), None(0), Waiting(-5), Rejected(-10)."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a repository name instead of a GUID."),
+    },
+    async ({ repositoryId, pullRequestId, vote, project }) => {
+      const connection = await connectionProvider();
+      const gitApi = await connection.getGitApi();
+
+      const userDetails = await getCurrentUserDetails(tokenProvider, connectionProvider, userAgentProvider);
+      const userId = userDetails.authenticatedUser.id;
+
+      if (!userId) {
+        throw new Error("Could not determine authenticated user ID.");
+      }
+
+      const voteMap: Record<string, number> = {
+        Approved: 10,
+        ApprovedWithSuggestions: 5,
+        NoVote: 0,
+        WaitingForAuthor: -5,
+        Rejected: -10,
+      };
+
+      await gitApi.createPullRequestReviewer({ vote: voteMap[vote], id: userId } as any, repositoryId, pullRequestId, userId, project);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Successfully cast vote '${vote}' on PR #${pullRequestId}.`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    REPO_TOOLS.list_directory,
+    "List files and folders in a directory within a repository. Useful for exploring the structure of a codebase or finding related files.",
+    {
+      repositoryId: z.string().describe("The ID or name of the repository."),
+      path: z.string().optional().default("/").describe("The directory path to list (e.g., '/src' or '/src/components'). Defaults to repository root."),
+      project: z.string().optional().describe("Project ID or name. Required if repositoryId is a name rather than a GUID."),
+      version: z.string().optional().describe("The version identifier - branch name (e.g., 'main'), tag name, or commit SHA. Defaults to the repository's default branch."),
+      versionType: z.enum(["Branch", "Commit", "Tag"]).optional().default("Branch").describe("The type of version identifier: 'Branch', 'Commit', or 'Tag'. Defaults to 'Branch'."),
+      recursive: z.boolean().optional().default(false).describe("Whether to list items recursively. Defaults to false."),
+      recursionDepth: z.coerce.number().min(1).optional().default(1).describe("Maximum depth for recursive listing (1-10). Only applies when recursive is true. Defaults to 1."),
+    },
+    async ({ repositoryId, path, project, version, versionType, recursive, recursionDepth }) => {
+      try {
+        const connection = await connectionProvider();
+        const gitApi = await connection.getGitApi();
+
+        const versionDescriptor = buildVersionDescriptor(version, versionType);
+        const clampedDepth = Math.min(Math.max(recursionDepth || 1, 1), 10);
+
+        let recursionType = VersionControlRecursionType.OneLevel;
+
+        if (recursive) {
+          recursionType = VersionControlRecursionType.Full;
+        }
+
+        const items = await gitApi.getItems(repositoryId, project, path, recursionType, true, false, false, false, versionDescriptor);
+
+        if (!items || items.length === 0) {
+          return {
+            content: [{ type: "text", text: `No items found at path: ${path}` }],
+          };
+        }
+
+        let filteredItems = items;
+
+        if (recursive && clampedDepth < 10) {
+          const basePath = path === "/" ? "" : path;
+          const baseDepth = basePath.split("/").filter((p) => p).length;
+
+          filteredItems = items.filter((item) => {
+            if (!item.path) return false;
+            const itemDepth = item.path.split("/").filter((p) => p).length;
+            return itemDepth <= baseDepth + clampedDepth;
+          });
+        }
+
+        const formattedItems = filteredItems.map((item) => ({
+          path: item.path,
+          isFolder: item.isFolder,
+          gitObjectType: item.gitObjectType,
+          commitId: item.commitId,
+          contentMetadata: item.contentMetadata
+            ? {
+                contentType: item.contentMetadata.contentType,
+                fileName: item.contentMetadata.fileName,
+              }
+            : undefined,
+        }));
+
+        const response = {
+          count: formattedItems.length,
+          path: path,
+          recursive: recursive,
+          recursionDepth: recursive ? clampedDepth : undefined,
+          items: formattedItems,
+        };
+
+        return {
+          content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+
+        return {
+          content: [{ type: "text", text: `Error listing directory: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ── Get file content at a specific version (branch, tag, or commit) ──
+  const fileVersionTypeStrings = getEnumKeys(GitVersionType);
+
+  server.tool(
+    REPO_TOOLS.get_file_content,
+    "Get the content of a file from a Git repository at a specific version (branch, tag, or commit SHA). " +
+      "Useful for reading source files from PR branches, specific commits, or tags without having them checked out locally.",
+    {
+      repositoryId: z.string().describe("The ID (GUID) or name of the repository."),
+      path: z.string().describe("The full path to the file in the repository, e.g., '/src/main.ts' or 'src/main.ts'."),
+      project: z.string().optional().describe("Project ID or project name. Required when repositoryId is a name."),
+      version: z
+        .string()
+        .optional()
+        .describe("Version string: branch name (e.g. 'main'), tag name, or commit SHA. " + "Defaults to the repository's default branch if not specified."),
+      versionType: z
+        .enum(fileVersionTypeStrings as [string, ...string[]])
+        .optional()
+        .default("Commit")
+        .describe("How to interpret the 'version' parameter. Defaults to 'Commit'."),
+    },
+    async ({ repositoryId, path, project, version, versionType }) => {
+      try {
+        const connection = await connectionProvider();
+        const gitApi = await connection.getGitApi();
+
+        // Build the version descriptor if a version was specified
+        const versionDescriptor: GitVersionDescriptor | undefined = version
+          ? {
+              version: version,
+              versionType: GitVersionType[versionType as keyof typeof GitVersionType],
+            }
+          : undefined;
+
+        // getItemText returns a ReadableStream of the file content as text
+        const stream = await gitApi.getItemText(
+          repositoryId,
+          path,
+          project,
+          undefined, // scopePath
+          undefined, // recursionLevel
+          undefined, // includeContentMetadata
+          undefined, // latestProcessedChange
+          false, // download
+          versionDescriptor,
+          true // includeContent
+        );
+
+        const content = await streamToString(stream);
+
+        return {
+          content: [{ type: "text", text: content }],
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error getting file content for '${path}': ${errorMessage}`,
+            },
+          ],
           isError: true,
         };
       }

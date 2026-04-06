@@ -95,8 +95,8 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
     "Creates a new test suite in a test plan.",
     {
       project: z.string().describe("Project ID or project name"),
-      planId: z.number().describe("ID of the test plan that contains the suites"),
-      parentSuiteId: z.number().describe("ID of the parent suite under which the new suite will be created, if not given by user this can be id of a root suite of the test plan"),
+      planId: z.coerce.number().min(1).describe("ID of the test plan that contains the suites"),
+      parentSuiteId: z.coerce.number().min(1).describe("ID of the parent suite under which the new suite will be created, if not given by user this can be id of a root suite of the test plan"),
       name: z.string().describe("Name of the child test suite"),
     },
     async ({ project, planId, parentSuiteId, name }) => {
@@ -156,8 +156,8 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
     "Adds existing test cases to a test suite.",
     {
       project: z.string().describe("The unique identifier (ID or name) of the Azure DevOps project."),
-      planId: z.number().describe("The ID of the test plan."),
-      suiteId: z.number().describe("The ID of the test suite."),
+      planId: z.coerce.number().min(1).describe("The ID of the test plan."),
+      suiteId: z.coerce.number().min(1).describe("The ID of the test suite."),
       testCaseIds: z.string().or(z.array(z.string())).describe("The ID(s) of the test case(s) to add. "),
     },
     async ({ project, planId, suiteId, testCaseIds }) => {
@@ -195,10 +195,10 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
         .describe(
           "The steps to reproduce the test case. Make sure to format each step as '1. Step one|Expected result one\n2. Step two|Expected result two. USE '|' as the delimiter between step and expected result. DO NOT use '|' in the description of the step or expected result."
         ),
-      priority: z.number().optional().describe("The priority of the test case."),
+      priority: z.coerce.number().optional().describe("The priority of the test case."),
       areaPath: z.string().optional().describe("The area path for the test case."),
       iterationPath: z.string().optional().describe("The iteration path for the test case."),
-      testsWorkItemId: z.number().optional().describe("Optional work item id that will be set as a Microsoft.VSTS.Common.TestedBy-Reverse link to the test case."),
+      testsWorkItemId: z.coerce.number().min(1).optional().describe("Optional work item id that will be set as a Microsoft.VSTS.Common.TestedBy-Reverse link to the test case."),
     },
     async ({ project, title, steps, priority, areaPath, iterationPath, testsWorkItemId }) => {
       try {
@@ -281,7 +281,7 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
     Test_Plan_Tools.update_test_case_steps,
     "Update an existing test case work item.",
     {
-      id: z.number().describe("The ID of the test case work item to update."),
+      id: z.coerce.number().min(1).describe("The ID of the test case work item to update."),
       steps: z
         .string()
         .describe(
@@ -329,8 +329,8 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
     "Gets a list of test cases in the test plan.",
     {
       project: z.string().describe("The unique identifier (ID or name) of the Azure DevOps project."),
-      planid: z.number().describe("The ID of the test plan."),
-      suiteid: z.number().describe("The ID of the test suite."),
+      planid: z.coerce.number().min(1).describe("The ID of the test plan."),
+      suiteid: z.coerce.number().min(1).describe("The ID of the test suite."),
     },
     async ({ project, planid, suiteid }) => {
       try {
@@ -353,19 +353,58 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
 
   server.tool(
     Test_Plan_Tools.test_results_from_build_id,
-    "Gets a list of test results for a given project and build ID.",
+    "Gets a list of test results for a given project and build ID. Can filter by test outcome (e.g. Failed, Passed, Aborted). Returns test case titles, error messages, stack traces, and outcomes. Efficiently handles builds with large numbers of test runs.",
     {
       project: z.string().describe("The unique identifier (ID or name) of the Azure DevOps project."),
-      buildid: z.number().describe("The ID of the build."),
+      buildid: z.coerce.number().min(1).describe("The ID of the build."),
+      outcomes: z.array(z.string()).optional().describe("Filter results by test outcome, e.g. ['Failed', 'Passed', 'Aborted']."),
     },
-    async ({ project, buildid }) => {
+    async ({ project, buildid, outcomes }) => {
       try {
         const connection = await connectionProvider();
-        const coreApi = await connection.getTestResultsApi();
-        const testResults = await coreApi.getTestResultDetailsForBuild(project, buildid);
+        const testResultsApi = await connection.getTestResultsApi();
+
+        // Build filter expression for outcomes if specified
+        const outcomeFilter = outcomes?.map((o) => `Outcome eq '${o}'`).join(" or ");
+
+        // Fetch test result details for the build in a single API call
+        // This is more efficient than getTestRuns + getTestResults per run,
+        // especially for builds with many test runs (e.g., cloud testing with one run per test case)
+        const testResultDetails = await testResultsApi.getTestResultDetailsForBuild(
+          project,
+          buildid,
+          undefined, // publishContext
+          undefined, // groupBy
+          outcomeFilter, // filter by outcome
+          undefined, // orderby
+          true // shouldIncludeResults - get individual test results, not just aggregates
+        );
+
+        // Extract individual test results from the grouped response
+        const allResults: any[] = [];
+        if (testResultDetails.resultsForGroup) {
+          for (const group of testResultDetails.resultsForGroup) {
+            if (group.results) {
+              allResults.push(...group.results);
+            }
+          }
+        }
+
+        // Format results to extract useful fields
+        const formattedResults = allResults.map((r) => ({
+          id: r.id,
+          testCaseTitle: r.testCaseTitle,
+          outcome: r.outcome,
+          errorMessage: r.errorMessage,
+          stackTrace: r.stackTrace,
+          automatedTestName: r.automatedTestName,
+          automatedTestStorage: r.automatedTestStorage,
+          durationInMs: r.durationInMs,
+          runId: r.testRun?.id,
+        }));
 
         return {
-          content: [{ type: "text", text: JSON.stringify(testResults, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(formattedResults, null, 2) }],
         };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
@@ -382,7 +421,7 @@ function configureTestPlanTools(server: McpServer, _: () => Promise<string>, con
     "Retrieve a paginated list of test suites from an Azure DevOps project and Test Plan Id.",
     {
       project: z.string().describe("The unique identifier (ID or name) of the Azure DevOps project."),
-      planId: z.number().describe("The ID of the test plan."),
+      planId: z.coerce.number().min(1).describe("The ID of the test plan."),
       continuationToken: z.string().optional().describe("Token to continue fetching test plans from a previous request."),
     },
     async ({ project, planId, continuationToken }) => {
