@@ -11,9 +11,10 @@ import { mockUpdateBuildStageResponse, mockMultipleArtifacts, mockArtifact } fro
 import { Readable } from "stream";
 import { resolve } from "path";
 import { mkdirSync, createWriteStream } from "fs";
+import { Buffer } from "node:buffer";
 
 // Mock fetch globally
-global.fetch = jest.fn() as jest.MockedFunction<typeof fetch>;
+globalThis.fetch = jest.fn() as jest.MockedFunction<typeof fetch>;
 
 jest.mock("fs");
 
@@ -37,7 +38,7 @@ describe("configurePipelineTools", () => {
       serverUrl: "https://dev.azure.com/test-org",
     };
     connectionProvider = jest.fn().mockResolvedValue(mockConnection);
-    (global.fetch as jest.MockedFunction<typeof fetch>).mockClear();
+    (globalThis.fetch as jest.MockedFunction<typeof fetch>).mockClear();
   });
 
   describe("tool registration", () => {
@@ -62,7 +63,7 @@ describe("configurePipelineTools", () => {
         ok: true,
         text: jest.fn().mockResolvedValue(JSON.stringify(mockUpdateBuildStageResponse)),
       };
-      (global.fetch as jest.MockedFunction<typeof fetch>).mockResolvedValue(mockResponse as unknown as Response);
+      (globalThis.fetch as jest.MockedFunction<typeof fetch>).mockResolvedValue(mockResponse as unknown as Response);
 
       const params = {
         project: "test-project",
@@ -74,7 +75,7 @@ describe("configurePipelineTools", () => {
 
       const result = await handler(params);
 
-      expect(global.fetch).toHaveBeenCalledWith(`https://dev.azure.com/test-org/test-project/_apis/build/builds/123/stages/Build?api-version=${apiVersion}`, {
+      expect(globalThis.fetch).toHaveBeenCalledWith(`https://dev.azure.com/test-org/test-project/_apis/build/builds/123/stages/Build?api-version=${apiVersion}`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -105,7 +106,7 @@ describe("configurePipelineTools", () => {
         status: 404,
         text: jest.fn().mockResolvedValue("Build stage not found"),
       };
-      (global.fetch as jest.MockedFunction<typeof fetch>).mockResolvedValue(mockResponse as unknown as Response);
+      (globalThis.fetch as jest.MockedFunction<typeof fetch>).mockResolvedValue(mockResponse as unknown as Response);
 
       const params = {
         project: "test-project",
@@ -117,7 +118,7 @@ describe("configurePipelineTools", () => {
 
       await expect(handler(params)).rejects.toThrow("Failed to update build stage: 404 Build stage not found");
 
-      expect(global.fetch).toHaveBeenCalledWith(`https://dev.azure.com/test-org/test-project/_apis/build/builds/999/stages/NonExistentStage?api-version=${apiVersion}`, {
+      expect(globalThis.fetch).toHaveBeenCalledWith(`https://dev.azure.com/test-org/test-project/_apis/build/builds/999/stages/NonExistentStage?api-version=${apiVersion}`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -142,7 +143,7 @@ describe("configurePipelineTools", () => {
 
       // Mock network error
       const networkError = new Error("Network connection failed");
-      (global.fetch as jest.MockedFunction<typeof fetch>).mockRejectedValue(networkError);
+      (globalThis.fetch as jest.MockedFunction<typeof fetch>).mockRejectedValue(networkError);
 
       const params = {
         project: "test-project",
@@ -154,7 +155,7 @@ describe("configurePipelineTools", () => {
 
       await expect(handler(params)).rejects.toThrow("Network connection failed");
 
-      expect(global.fetch).toHaveBeenCalledWith(`https://dev.azure.com/test-org/test-project/_apis/build/builds/123/stages/Build?api-version=${apiVersion}`, {
+      expect(globalThis.fetch).toHaveBeenCalledWith(`https://dev.azure.com/test-org/test-project/_apis/build/builds/123/stages/Build?api-version=${apiVersion}`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -189,7 +190,7 @@ describe("configurePipelineTools", () => {
       await expect(handler(params)).rejects.toThrow("Failed to get access token");
 
       // Should not call fetch if token provider fails
-      expect(global.fetch).not.toHaveBeenCalled();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
     it("should handle different StageUpdateType values correctly", async () => {
@@ -204,7 +205,7 @@ describe("configurePipelineTools", () => {
         ok: true,
         text: jest.fn().mockResolvedValue(JSON.stringify(mockUpdateBuildStageResponse)),
       };
-      (global.fetch as jest.MockedFunction<typeof fetch>).mockResolvedValue(mockResponse as unknown as Response);
+      (globalThis.fetch as jest.MockedFunction<typeof fetch>).mockResolvedValue(mockResponse as unknown as Response);
 
       const params = {
         project: "test-project",
@@ -216,7 +217,7 @@ describe("configurePipelineTools", () => {
 
       await handler(params);
 
-      expect(global.fetch).toHaveBeenCalledWith(
+      expect(globalThis.fetch).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({
           body: JSON.stringify({
@@ -1345,6 +1346,7 @@ describe("configurePipelineTools", () => {
   describe("pipelines_list_artifacts", () => {
     it("should list artifacts for a given build", async () => {
       const mockGetArtifacts = jest.fn().mockResolvedValue(mockMultipleArtifacts);
+      // deno-lint-ignore no-explicit-any
       mockConnection.getBuildApi.mockResolvedValue({ getArtifacts: mockGetArtifacts } as any);
 
       configurePipelineTools(server, tokenProvider, connectionProvider, userAgentProvider);
@@ -1363,6 +1365,7 @@ describe("configurePipelineTools", () => {
 
     it("should handle empty artifact list", async () => {
       const mockGetArtifacts = jest.fn().mockResolvedValue([]);
+      // deno-lint-ignore no-explicit-any
       mockConnection.getBuildApi.mockResolvedValue({ getArtifacts: mockGetArtifacts } as any);
 
       configurePipelineTools(server, tokenProvider, connectionProvider, userAgentProvider);
@@ -1380,6 +1383,7 @@ describe("configurePipelineTools", () => {
 
     it("should handle errors when listing artifacts", async () => {
       const mockGetArtifacts = jest.fn().mockRejectedValue(new Error("Build not found"));
+      // deno-lint-ignore no-explicit-any
       mockConnection.getBuildApi.mockResolvedValue({ getArtifacts: mockGetArtifacts } as any);
 
       configurePipelineTools(server, tokenProvider, connectionProvider, userAgentProvider);
@@ -1393,6 +1397,7 @@ describe("configurePipelineTools", () => {
   });
 
   describe("pipelines_download_artifact", () => {
+    // deno-lint-ignore no-explicit-any
     let mockWriteStream: any;
     let mockFileStream: Readable;
 
@@ -1420,6 +1425,7 @@ describe("configurePipelineTools", () => {
       const mockGetArtifact = jest.fn().mockResolvedValue(mockArtifact);
       const mockGetArtifactContentZip = jest.fn().mockResolvedValue(mockFileStream);
 
+      // deno-lint-ignore no-explicit-any
       mockConnection.getBuildApi.mockResolvedValue({
         getArtifact: mockGetArtifact,
         getArtifactContentZip: mockGetArtifactContentZip,
@@ -1449,6 +1455,7 @@ describe("configurePipelineTools", () => {
     it("should handle artifact not found", async () => {
       const mockGetArtifact = jest.fn().mockResolvedValue(null);
 
+      // deno-lint-ignore no-explicit-any
       mockConnection.getBuildApi.mockResolvedValue({
         getArtifact: mockGetArtifact,
       } as any);
@@ -1474,6 +1481,7 @@ describe("configurePipelineTools", () => {
       const mockGetArtifact = jest.fn().mockResolvedValue(mockArtifact);
       const mockGetArtifactContentZip = jest.fn().mockRejectedValue(new Error("Network error"));
 
+      // deno-lint-ignore no-explicit-any
       mockConnection.getBuildApi.mockResolvedValue({
         getArtifact: mockGetArtifact,
         getArtifactContentZip: mockGetArtifactContentZip,
@@ -1627,6 +1635,7 @@ describe("configurePipelineTools", () => {
 
       const mockGetArtifactContentZip = jest.fn().mockResolvedValue(mockFileStream);
 
+      // deno-lint-ignore no-explicit-any
       mockConnection.getBuildApi.mockResolvedValue({
         getArtifact: mockGetArtifact,
         getArtifactContentZip: mockGetArtifactContentZip,
