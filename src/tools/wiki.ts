@@ -6,6 +6,7 @@ import { WebApi } from "azure-devops-node-api";
 import { z } from "zod";
 import { WikiPagesBatchRequest } from "azure-devops-node-api/interfaces/WikiInterfaces.js";
 import { apiVersion } from "../utils.js";
+import { createExternalContentResponse } from "../shared/content-safety.js";
 
 const WIKI_TOOLS = {
   list_wikis: "wiki_list_wikis",
@@ -84,9 +85,9 @@ function configureWikiTools(server: McpServer, tokenProvider: () => Promise<stri
     {
       wikiIdentifier: z.string().describe("The unique identifier of the wiki."),
       project: z.string().describe("The project name or ID where the wiki is located."),
-      top: z.number().default(20).describe("The maximum number of pages to return. Defaults to 20."),
+      top: z.coerce.number().default(20).describe("The maximum number of pages to return. Defaults to 20."),
       continuationToken: z.string().optional().describe("Token for pagination to retrieve the next set of pages."),
-      pageViewsForDays: z.number().optional().describe("Number of days to retrieve page views for. If not specified, page views are not included."),
+      pageViewsForDays: z.coerce.number().optional().describe("Number of days to retrieve page views for. If not specified, page views are not included."),
     },
     async ({ wikiIdentifier, project, top = 20, continuationToken, pageViewsForDays }) => {
       try {
@@ -151,7 +152,7 @@ function configureWikiTools(server: McpServer, tokenProvider: () => Promise<stri
           params.append("recursionLevel", recursionLevel);
         }
 
-        const url = `${baseUrl}/${project}/_apis/wiki/wikis/${wikiIdentifier}/pages?${params.toString()}`;
+        const url = `${baseUrl}/${encodeURIComponent(project)}/_apis/wiki/wikis/${encodeURIComponent(wikiIdentifier)}/pages?${params.toString()}`;
 
         const response = await fetch(url, {
           headers: {
@@ -232,7 +233,7 @@ function configureWikiTools(server: McpServer, tokenProvider: () => Promise<stri
             try {
               const accessToken = await tokenProvider();
               const baseUrl = connection.serverUrl.replace(/\/$/, "");
-              const restUrl = `${baseUrl}/${resolvedProject}/_apis/wiki/wikis/${resolvedWiki}/pages/${parsed.pageId}?includeContent=true&api-version=7.1`;
+              const restUrl = `${baseUrl}/${encodeURIComponent(resolvedProject)}/_apis/wiki/wikis/${encodeURIComponent(resolvedWiki)}/pages/${parsed.pageId}?includeContent=true&api-version=7.1`;
               const resp = await fetch(restUrl, {
                 headers: {
                   "Authorization": `Bearer ${accessToken}`,
@@ -267,7 +268,7 @@ function configureWikiTools(server: McpServer, tokenProvider: () => Promise<stri
           pageContent = await streamToString(stream);
         }
 
-        return { content: [{ type: "text", text: JSON.stringify(pageContent, null, 2) }] };
+        return createExternalContentResponse(pageContent, "wiki page");
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 
@@ -302,7 +303,7 @@ function configureWikiTools(server: McpServer, tokenProvider: () => Promise<stri
         // Build the URL for the wiki page API with version descriptor
         const baseUrl = connection.serverUrl;
         const projectParam = project || "";
-        const url = `${baseUrl}/${projectParam}/_apis/wiki/wikis/${wikiIdentifier}/pages?path=${encodedPath}&versionDescriptor.versionType=branch&versionDescriptor.version=${encodeURIComponent(branch)}&api-version=7.1`;
+        const url = `${baseUrl}/${encodeURIComponent(projectParam)}/_apis/wiki/wikis/${encodeURIComponent(wikiIdentifier)}/pages?path=${encodedPath}&versionDescriptor.versionType=branch&versionDescriptor.version=${encodeURIComponent(branch)}&api-version=7.1`;
 
         // First, try to create a new page (PUT without ETag)
         try {
